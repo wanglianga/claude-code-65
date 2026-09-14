@@ -55,7 +55,12 @@ export default function TasksPage() {
       <td>{TASK_TYPE_LABELS[t.type]}</td>
       <td><Badge text={PRIORITY_LABELS[t.case.priority]} cls={priorityBadge(t.case.priority)} /></td>
       <td className="muted">{fmtDate(t.dueDate)}</td>
-      <td><Badge text={TASK_STATUS_LABELS[t.status]} cls={taskStatusBadge(t.status)} /></td>
+      <td>
+        <Badge text={TASK_STATUS_LABELS[t.status]} cls={taskStatusBadge(t.status)} />
+        {t.status === 'DONE' && t.completedBy && (
+          <div className="muted" style={{ fontSize: 12 }}>完成人：{t.completedBy.name}</div>
+        )}
+      </td>
       <td>
         {t.status !== 'DONE' && (
           <div className="btn-row" style={{ marginTop: 0 }}>

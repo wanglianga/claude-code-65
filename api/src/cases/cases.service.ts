@@ -15,7 +15,11 @@ const CASE_INCLUDE = {
   materials: { include: { uploadedBy: { select: { id: true, name: true, role: true } } }, orderBy: { createdAt: 'asc' as const } },
   keyDates: { orderBy: { date: 'asc' as const } },
   tasks: {
-    include: { assignee: { select: { id: true, name: true, role: true } }, createdBy: { select: { id: true, name: true } } },
+    include: {
+      assignee: { select: { id: true, name: true, role: true } },
+      createdBy: { select: { id: true, name: true } },
+      completedBy: { select: { id: true, name: true } },
+    },
     orderBy: { createdAt: 'asc' as const },
   },
   appointments: { include: { lawyer: { select: { id: true, name: true } } }, orderBy: { scheduledAt: 'asc' as const } },
@@ -418,9 +422,21 @@ export class CasesService {
   async updateTask(user: JwtUser, taskId: string, dto: any) {
     const task = await this.prisma.task.findUnique({ where: { id: taskId } })
     if (!task) throw new NotFoundException('任务不存在')
+    // 仅任务负责人、对应角色（角色任务）或管理员可变更任务状态
+    const canUpdate =
+      user.role === 'ADMIN' ||
+      task.assigneeId === user.sub ||
+      (!task.assigneeId && task.assigneeRole === user.role)
+    if (!canUpdate) {
+      throw new ForbiddenException('仅任务负责人、对应角色成员或管理员可更新任务状态')
+    }
     const updated = await this.prisma.task.update({
       where: { id: taskId },
-      data: { status: dto.status, completedAt: dto.status === 'DONE' ? new Date() : null },
+      data: {
+        status: dto.status,
+        completedAt: dto.status === 'DONE' ? new Date() : null,
+        completedById: dto.status === 'DONE' ? user.sub : null, // 记录真实执行人
+      },
     })
     await this.event(task.caseId, user.sub, '更新任务', `${task.title} → ${dto.status}`)
     return updated
@@ -432,7 +448,10 @@ export class CasesService {
         status: { not: 'CANCELLED' },
         OR: [{ assigneeId: user.sub }, { assigneeId: null, assigneeRole: user.role as any }],
       },
-      include: { case: { select: { id: true, caseNo: true, title: true, status: true, priority: true, confidentiality: true } } },
+      include: {
+        case: { select: { id: true, caseNo: true, title: true, status: true, priority: true, confidentiality: true } },
+        completedBy: { select: { id: true, name: true } },
+      },
       orderBy: [{ status: 'asc' }, { dueDate: 'asc' }],
       take: 200,
     })
@@ -529,15 +548,38 @@ export class CasesService {
     const isStaff = ['STAFF', 'ADMIN'].includes(user.role)
     const isLawyer = user.role === 'LAWYER' && kase.lawyerId === user.sub
     if (!isStaff && !isLawyer) throw new ForbiddenException('仅社区工作人员或承办律师可结案')
+
+    // 前置条件一：必须完成规定服务阶段
+    if (['SUBMITTED', 'UNDER_REVIEW'].includes(kase.status)) {
+      throw new BadRequestException('案件尚未完成资格初审分流，不能结案')
+    }
+    if (kase.category === 'LEGAL_AID') {
+      if (kase.status !== 'IN_SERVICE') {
+        throw new BadRequestException('法律援助案件须由律师接案并处于服务进行中，方可结案')
+      }
+    } else if (!['CLASSIFIED', 'REFERRED'].includes(kase.status)) {
+      throw new BadRequestException('当前状态不可结案：需先完成分流/转介等服务阶段')
+    }
+
+    // 前置条件二：归档必填资料齐全
+    const missing: string[] = []
+    if (!dto.consultationOpinion || !String(dto.consultationOpinion).trim()) missing.push('咨询意见')
+    if (!dto.materialCorrections || !String(dto.materialCorrections).trim()) missing.push('材料补正记录')
+    if (!dto.referralDestination || !String(dto.referralDestination).trim()) missing.push('转介去向')
+    if (dto.lawyerHours === null || dto.lawyerHours === undefined || isNaN(Number(dto.lawyerHours))) missing.push('律师工时')
+    if (missing.length) {
+      throw new BadRequestException(`归档资料不全，缺少：${missing.join('、')}`)
+    }
+
     await this.prisma.archive.upsert({
       where: { caseId: id },
       update: {},
       create: {
         caseId: id,
-        consultationOpinion: dto.consultationOpinion || null,
-        materialCorrections: dto.materialCorrections || null,
-        referralDestination: dto.referralDestination || null,
-        lawyerHours: dto.lawyerHours != null ? Number(dto.lawyerHours) : null,
+        consultationOpinion: dto.consultationOpinion,
+        materialCorrections: dto.materialCorrections,
+        referralDestination: dto.referralDestination,
+        lawyerHours: Number(dto.lawyerHours),
         followUpResult: dto.followUpResult || null,
         closedById: user.sub,
       },

@@ -296,7 +296,7 @@ async function main() {
       await prisma.serviceOrderParticipant.create({ data: { serviceOrderId: order.id, userId: uid, duty } })
     }
     await prisma.referral.create({ data: { caseId: kase.id, type: 'JUDICIAL', fromStreet: '朝阳街道', toUnit: '朝阳街道司法所人民调解委员会', reason: '涉未成年人侵权纠纷，先行人民调解', status: 'ACCEPTED', createdById: staff.id, handledAt: new Date(now - 3 * day) } })
-    await prisma.task.create({ data: { caseId: kase.id, type: 'COORDINATION', title: '通知监护人参与并联动未成年人保护中心', assigneeRole: 'STAFF', assigneeId: staff.id, status: 'DONE', createdById: staff.id, completedAt: new Date(now - 3 * day) } })
+    await prisma.task.create({ data: { caseId: kase.id, type: 'COORDINATION', title: '通知监护人参与并联动未成年人保护中心', assigneeRole: 'STAFF', assigneeId: staff.id, status: 'DONE', createdById: staff.id, completedAt: new Date(now - 3 * day), completedById: staff.id } })
     await prisma.caseEvent.createMany({ data: [
       { caseId: kase.id, actorId: resident2.id, action: '提交咨询' },
       { caseId: kase.id, actorId: staff.id, action: '资格初审', detail: '分流为：司法所转介（人民调解）' },

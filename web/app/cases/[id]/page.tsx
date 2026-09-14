@@ -74,6 +74,14 @@ export default function CaseDetailPage() {
   const completeness = materials.length ? Math.round((verifiedCount / materials.length) * 100) : 0
   const statuteDays = kase ? daysLeft(kase.statuteOfLimitations) : null
 
+  // 任务状态变更权限：任务负责人 / 对应角色（角色任务）/ 管理员
+  const canUpdateTask = (t: any) =>
+    user.role === 'ADMIN' || t.assigneeId === user.id || (!t.assigneeId && t.assigneeRole === role)
+
+  // 结案前置条件：完成规定服务阶段（法援案件须服务进行中；其他类型须已分流/转介）
+  const closable = kase && kase.status !== 'CLOSED' && !['SUBMITTED', 'UNDER_REVIEW'].includes(kase.status) &&
+    (kase.category === 'LEGAL_AID' ? kase.status === 'IN_SERVICE' : ['CLASSIFIED', 'REFERRED'].includes(kase.status))
+
   return (
     <>
       <Nav />
@@ -235,9 +243,14 @@ export default function CaseDetailPage() {
                         <td>{TASK_TYPE_LABELS[t.type]}</td>
                         <td>{t.assignee ? t.assignee.name : (t.assigneeRole ? `${ROLE_LABELS[t.assigneeRole]}（待定）` : '—')}</td>
                         <td className="muted">{fmtDate(t.dueDate)}</td>
-                        <td><Badge text={TASK_STATUS_LABELS[t.status]} cls={taskStatusBadge(t.status)} /></td>
                         <td>
-                          {['OPEN', 'IN_PROGRESS'].includes(t.status) && (t.assigneeId === user.id || isStaff || (!t.assigneeId && t.assigneeRole === role)) && (
+                          <Badge text={TASK_STATUS_LABELS[t.status]} cls={taskStatusBadge(t.status)} />
+                          {t.status === 'DONE' && t.completedBy && (
+                            <div className="muted" style={{ fontSize: 12 }}>完成人：{t.completedBy.name}</div>
+                          )}
+                        </td>
+                        <td>
+                          {['OPEN', 'IN_PROGRESS'].includes(t.status) && canUpdateTask(t) && (
                             <div className="btn-row" style={{ marginTop: 0 }}>
                               {t.status === 'OPEN' && <button className="btn btn-sm" onClick={() => run(() => api(`/tasks/${t.id}`, { method: 'PATCH', body: JSON.stringify({ status: 'IN_PROGRESS' }) }), '已开始办理')}>开始</button>}
                               <button className="btn btn-sm" onClick={() => run(() => api(`/tasks/${t.id}`, { method: 'PATCH', body: JSON.stringify({ status: 'DONE' }) }), '任务已完成')}>完成</button>
@@ -343,8 +356,18 @@ export default function CaseDetailPage() {
             </div>
 
             {/* ---------- 结案归档 / 档案 ---------- */}
-            {kase.status !== 'CLOSED' && (isStaff || isAssignedLawyer) && !['SUBMITTED', 'UNDER_REVIEW'].includes(kase.status) && (
+            {closable && (isStaff || isAssignedLawyer) && (
               <ClosePanel onSubmit={(dto) => run(() => api(`/cases/${kase.id}/close`, { method: 'POST', body: JSON.stringify(dto) }), '已结案归档')} />
+            )}
+            {!closable && kase.status !== 'CLOSED' && (isStaff || isAssignedLawyer) && !['SUBMITTED', 'UNDER_REVIEW'].includes(kase.status) && (
+              <div className="card">
+                <h2>结案归档</h2>
+                <div className="alert alert-orange" style={{ margin: 0 }}>
+                  暂不可结案：{kase.category === 'LEGAL_AID'
+                    ? '法律援助案件须由承办律师接案、处于「服务进行中」状态后方可结案。'
+                    : '需先完成分流/转介等服务阶段后方可结案。'}
+                </div>
+              </div>
             )}
 
             {kase.archive && (
@@ -665,32 +688,41 @@ function AddReferral({ onSubmit }: any) {
 function ClosePanel({ onSubmit }: any) {
   const [form, setForm] = useState({ consultationOpinion: '', materialCorrections: '', referralDestination: '', lawyerHours: '', followUpResult: '' })
   const set = (k: string, v: string) => setForm((f) => ({ ...f, [k]: v }))
+  // 归档必填：咨询意见、材料补正记录、转介去向、律师工时
+  const complete =
+    form.consultationOpinion.trim() !== '' &&
+    form.materialCorrections.trim() !== '' &&
+    form.referralDestination.trim() !== '' &&
+    form.lawyerHours.trim() !== '' && !isNaN(Number(form.lawyerHours)) && Number(form.lawyerHours) >= 0
   return (
     <div className="card" style={{ borderColor: 'var(--green)' }}>
       <h2>结案归档</h2>
+      <div className="alert alert-blue" style={{ marginTop: 0 }}>
+        归档必填：咨询意见、材料补正记录、转介去向、律师工时。资料不全将无法结案。
+      </div>
       <label className="label">咨询意见 *</label>
       <textarea className="input" value={form.consultationOpinion} onChange={(e) => set('consultationOpinion', e.target.value)} />
       <div className="form-grid">
         <div>
-          <label className="label">材料补正记录</label>
+          <label className="label">材料补正记录 *（无补正填"无"）</label>
           <input className="input" value={form.materialCorrections} onChange={(e) => set('materialCorrections', e.target.value)} />
         </div>
         <div>
-          <label className="label">转介去向</label>
+          <label className="label">转介去向 *（无转介填"无"）</label>
           <input className="input" value={form.referralDestination} onChange={(e) => set('referralDestination', e.target.value)} />
         </div>
         <div>
-          <label className="label">律师工时（小时）</label>
+          <label className="label">律师工时（小时）*</label>
           <input className="input" type="number" step="0.5" min="0" value={form.lawyerHours} onChange={(e) => set('lawyerHours', e.target.value)} />
         </div>
         <div>
-          <label className="label">回访结果</label>
+          <label className="label">回访结果（可结案后补登）</label>
           <input className="input" value={form.followUpResult} onChange={(e) => set('followUpResult', e.target.value)} />
         </div>
       </div>
       <div className="btn-row">
-        <button className="btn btn-primary" disabled={!form.consultationOpinion}
-          onClick={() => onSubmit({ ...form, lawyerHours: form.lawyerHours === '' ? undefined : Number(form.lawyerHours) })}>
+        <button className="btn btn-primary" disabled={!complete}
+          onClick={() => onSubmit({ ...form, lawyerHours: Number(form.lawyerHours) })}>
           结案并归档
         </button>
       </div>

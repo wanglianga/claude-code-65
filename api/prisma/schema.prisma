@@ -36,6 +36,7 @@ model User {
   materials      Material[]
   tasks          Task[]                    @relation("TaskAssignee")
   createdTasks   Task[]                    @relation("TaskCreator")
+  completedTasks Task[]                    @relation("TaskCompletedBy")
   participants   ServiceOrderParticipant[]
   appointments   Appointment[]             @relation("LawyerAppointments")
   conflictChecks ConflictCheck[]
@@ -255,6 +256,8 @@ model Task {
   createdBy    User?   @relation("TaskCreator", fields: [createdById], references: [id])
   createdAt    DateTime @default(now())
   completedAt  DateTime?
+  completedById String?
+  completedBy   User?   @relation("TaskCompletedBy", fields: [completedById], references: [id])
 }
 
 // 预约（居民与律师的咨询预约）

@@ -23,6 +23,7 @@ import {
   IsIn,
   IsInt,
   IsNotEmpty,
+  IsNumber,
   IsOptional,
   IsString,
   Max,
@@ -144,10 +145,10 @@ class UpdateReferralDto {
 }
 
 class CloseDto {
-  @IsOptional() @IsString() consultationOpinion?: string
-  @IsOptional() @IsString() materialCorrections?: string
-  @IsOptional() @IsString() referralDestination?: string
-  @IsOptional() @Type(() => Number) lawyerHours?: number
+  @IsString() @IsNotEmpty({ message: '咨询意见为归档必填项' }) consultationOpinion: string
+  @IsString() @IsNotEmpty({ message: '材料补正记录为归档必填项（无补正可填"无"）' }) materialCorrections: string
+  @IsString() @IsNotEmpty({ message: '转介去向为归档必填项（无转介可填"无"）' }) referralDestination: string
+  @Type(() => Number) @IsNumber({}, { message: '律师工时为归档必填项' }) @Min(0, { message: '律师工时不能为负' }) lawyerHours: number
   @IsOptional() @IsString() followUpResult?: string
 }
 

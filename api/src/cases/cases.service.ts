@@ -8,8 +8,23 @@ import { PrismaService } from '../prisma.service'
 import { JwtUser } from '../common'
 import { buildAutoTasks, computeSpecialRules, maskName, maskPhone } from './rules'
 
-const CASE_INCLUDE = {
-  resident: { select: { id: true, name: true, phone: true } },
+// 严格解析工时等必填数值：空串、纯空格、null、undefined、布尔、非有限数、负数一律无效
+function parseStrictHours(v: any): number | null {
+  if (v === null || v === undefined || typeof v === 'boolean') return null
+  let n: number
+  if (typeof v === 'string') {
+    const t = v.trim()
+    if (t === '') return null
+    n = Number(t)
+  } else if (typeof v === 'number') {
+    n = v
+  } else {
+    return null
+  }
+  return Number.isFinite(n) && n >= 0 ? n : null
+}
+
+const CASE_INCLUDE = {  resident: { select: { id: true, name: true, phone: true } },
   reviewedBy: { select: { id: true, name: true } },
   lawyer: { select: { id: true, name: true, organization: true, onLeave: true } },
   materials: { include: { uploadedBy: { select: { id: true, name: true, role: true } } }, orderBy: { createdAt: 'asc' as const } },
@@ -566,7 +581,8 @@ export class CasesService {
     if (!dto.consultationOpinion || !String(dto.consultationOpinion).trim()) missing.push('咨询意见')
     if (!dto.materialCorrections || !String(dto.materialCorrections).trim()) missing.push('材料补正记录')
     if (!dto.referralDestination || !String(dto.referralDestination).trim()) missing.push('转介去向')
-    if (dto.lawyerHours === null || dto.lawyerHours === undefined || isNaN(Number(dto.lawyerHours))) missing.push('律师工时')
+    const hours = parseStrictHours(dto.lawyerHours)
+    if (hours === null) missing.push('律师工时（须为不小于 0 的明确数值）')
     if (missing.length) {
       throw new BadRequestException(`归档资料不全，缺少：${missing.join('、')}`)
     }
@@ -579,7 +595,7 @@ export class CasesService {
         consultationOpinion: dto.consultationOpinion,
         materialCorrections: dto.materialCorrections,
         referralDestination: dto.referralDestination,
-        lawyerHours: Number(dto.lawyerHours),
+        lawyerHours: hours!,
         followUpResult: dto.followUpResult || null,
         closedById: user.sub,
       },

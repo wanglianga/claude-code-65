@@ -14,7 +14,33 @@ import {
 import { FileInterceptor } from '@nestjs/platform-express'
 import { Response } from 'express'
 import { diskStorage } from 'multer'
-import { Type } from 'class-transformer'
+import { Transform, Type } from 'class-transformer'
+
+// 严格数值转换：空字符串/纯空格/非数字串一律转为 NaN（@IsNumber 默认拒绝 NaN/Infinity），
+// 防止 Number("")===0 之类的隐式转换绕过校验；合法数值字符串正常转换。
+const StrictNumber = () =>
+  Transform(({ value }) => {
+    if (typeof value === 'string') {
+      const t = value.trim()
+      if (t === '') return NaN
+      const n = Number(t)
+      return Number.isFinite(n) ? n : NaN
+    }
+    return value
+  })
+
+// 可选数值：空串/纯空格视为未填写（undefined），非法值转 NaN 让校验拦截
+const OptionalStrictNumber = () =>
+  Transform(({ value }) => {
+    if (value === null || value === undefined) return undefined
+    if (typeof value === 'string') {
+      const t = value.trim()
+      if (t === '') return undefined
+      const n = Number(t)
+      return Number.isFinite(n) ? n : NaN
+    }
+    return value
+  })
 import {
   ArrayNotEmpty,
   IsArray,
@@ -54,7 +80,7 @@ class CreateCaseDto {
   @IsOptional() @IsIn(['COMMUNITY_EVENT', 'HOTLINE', 'OFFLINE_PAPER', 'CROSS_STREET']) source?: string
   @IsOptional() @IsString() applicantName?: string
   @IsOptional() @IsString() applicantPhone?: string
-  @IsOptional() @Type(() => Number) @IsInt() @Min(0) familyIncome?: number
+  @IsOptional() @OptionalStrictNumber() @IsInt() @Min(0) familyIncome?: number
   @IsOptional() @IsBoolean() isDisabled?: boolean
   @IsOptional() @IsBoolean() involvesMinor?: boolean
   @IsOptional() @IsBoolean() isWageArrearsGroup?: boolean
@@ -148,12 +174,12 @@ class CloseDto {
   @IsString() @IsNotEmpty({ message: '咨询意见为归档必填项' }) consultationOpinion: string
   @IsString() @IsNotEmpty({ message: '材料补正记录为归档必填项（无补正可填"无"）' }) materialCorrections: string
   @IsString() @IsNotEmpty({ message: '转介去向为归档必填项（无转介可填"无"）' }) referralDestination: string
-  @Type(() => Number) @IsNumber({}, { message: '律师工时为归档必填项' }) @Min(0, { message: '律师工时不能为负' }) lawyerHours: number
+  @StrictNumber() @IsNumber({}, { message: '律师工时为归档必填项，须为明确数值' }) @Min(0, { message: '律师工时不能为负' }) lawyerHours: number
   @IsOptional() @IsString() followUpResult?: string
 }
 
 class SatisfactionDto {
-  @Type(() => Number) @IsInt() @Min(1) @Max(5) score: number
+  @StrictNumber() @IsInt() @Min(1) @Max(5) score: number
   @IsOptional() @IsString() note?: string
 }
 

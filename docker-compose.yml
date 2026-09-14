@@ -1,0 +1,56 @@
+# 城市社区法律援助预约与案件分流平台
+# 一键启动：docker compose up -d --build
+# 项目名由环境变量 COMPOSE_PROJECT_NAME 固定，不在本文件中设置 name 字段。
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-legalaid}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-legalaid_pass}
+      POSTGRES_DB: ${POSTGRES_DB:-legalaid}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 24
+    networks:
+      - internal
+    # 数据库不发布到宿主端口，仅 compose 内部网络访问
+
+  api:
+    build: ./api
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-legalaid}:${POSTGRES_PASSWORD:-legalaid_pass}@db:5432/${POSTGRES_DB:-legalaid}
+      JWT_SECRET: ${JWT_SECRET:-legalaid-dev-secret-change-in-prod}
+      PORT: 4000
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - uploads:/app/uploads
+    networks:
+      - internal
+    # API 不直接发布到宿主，由 web 服务通过 Next.js rewrites 反向代理 /api/*
+
+  web:
+    build: ./web
+    environment:
+      API_INTERNAL_URL: http://api:4000
+    depends_on:
+      api:
+        condition: service_started
+    ports:
+      - "${CC_PUBLISH_PORT}:3000"
+    networks:
+      - internal
+
+volumes:
+  pgdata:
+  uploads:
+
+networks:
+  internal:
+    driver: bridge

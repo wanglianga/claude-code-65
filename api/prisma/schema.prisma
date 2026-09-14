@@ -1,0 +1,344 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------- 用户与角色 ----------------
+enum Role {
+  ADMIN       // 平台管理员
+  RESIDENT    // 居民
+  STAFF       // 社区工作人员
+  LAWYER      // 值班律师
+  JUDICIAL    // 司法所工作人员
+  VOLUNTEER   // 志愿者
+}
+
+model User {
+  id           String   @id @default(cuid())
+  username     String   @unique
+  password     String
+  name         String
+  role         Role
+  phone        String?
+  organization String? // 所属社区 / 律所 / 司法所 / 志愿队
+  street       String? // 所属街道
+  onLeave      Boolean  @default(false) // 律师临时请假
+  leaveReason  String?
+  createdAt    DateTime @default(now())
+
+  residentCases  Case[]                    @relation("ResidentCases")
+  lawyerCases    Case[]                    @relation("LawyerCases")
+  reviewedCases  Case[]                    @relation("ReviewedCases")
+  materials      Material[]
+  tasks          Task[]                    @relation("TaskAssignee")
+  createdTasks   Task[]                    @relation("TaskCreator")
+  participants   ServiceOrderParticipant[]
+  appointments   Appointment[]             @relation("LawyerAppointments")
+  conflictChecks ConflictCheck[]
+  events         CaseEvent[]
+  referrals      Referral[]
+}
+
+// ---------------- 案件 ----------------
+enum CaseType {
+  LABOR_DISPUTE          // 劳动纠纷
+  MARRIAGE_FAMILY        // 婚姻家事
+  HOUSING_RENTAL         // 房屋租赁
+  NEIGHBORHOOD_TORT      // 邻里侵权
+  CONSUMER_RIGHTS        // 消费维权
+  ADMIN_RECONSIDERATION  // 行政复议
+}
+
+enum CaseSource {
+  ONLINE         // 居民线上提交
+  COMMUNITY_EVENT// 社区活动现场咨询
+  HOTLINE        // 热线转入
+  OFFLINE_PAPER  // 线下纸质材料补录
+  CROSS_STREET   // 跨街道转入
+}
+
+enum Urgency {
+  LOW
+  NORMAL
+  HIGH
+  URGENT
+}
+
+enum Priority {
+  LOW
+  NORMAL
+  HIGH
+  URGENT
+}
+
+enum Confidentiality {
+  NORMAL       // 普通
+  CONFIDENTIAL // 保密（涉未成年人等）
+  STRICT       // 严格保密（家暴等）
+}
+
+enum CaseStatus {
+  SUBMITTED           // 已提交，待初审
+  UNDER_REVIEW        // 资格初审中
+  CLASSIFIED          // 已分流
+  AWAITING_LAWYER     // 待律师接案
+  IN_SERVICE          // 服务进行中
+  MATERIAL_SUPPLEMENT // 待补正材料
+  REFERRED            // 已转介
+  CLOSED              // 已结案归档
+}
+
+enum Category {
+  LEGAL_AID         // 法律援助
+  PEOPLES_MEDIATION // 人民调解
+  JUDICIAL_REFERRAL // 司法所转介
+  HOTLINE_ANSWER    // 热线解答
+  COMMERCIAL_LAWYER // 商业律师服务
+}
+
+model Case {
+  id          String   @id @default(cuid())
+  caseNo      String   @unique
+  title       String
+  type        CaseType
+  description String   // 诉求与案件事实
+  source      CaseSource @default(ONLINE)
+  status      CaseStatus @default(SUBMITTED)
+  urgency     Urgency  @default(NORMAL)
+  priority    Priority @default(NORMAL)
+  confidentiality Confidentiality @default(NORMAL)
+  category    Category? // 分流去向（初审结果）
+
+  // 申请人信息（居民线上提交时与 resident 一致；线下补录时由工作人员代填）
+  applicantName  String
+  applicantPhone String?
+  residentId     String?
+  resident       User?   @relation("ResidentCases", fields: [residentId], references: [id])
+
+  // 资格与特殊情形
+  familyIncome   Int?    // 家庭月收入（元）
+  isDisabled     Boolean @default(false) // 是否残障
+  involvesMinor  Boolean @default(false) // 是否涉未成年人
+  isWageArrearsGroup Boolean @default(false) // 欠薪群体
+  isDomesticViolence Boolean @default(false) // 家庭暴力风险
+  isElderlySupport   Boolean @default(false) // 老人赡养
+  isMinorRights      Boolean @default(false) // 未成年人权益
+  opponentSued       Boolean @default(false) // 对方已经起诉
+  opposingParties    String? // 冲突主体（对方当事人）
+  statuteOfLimitations DateTime? // 诉讼时效届满日
+  deadlineNotes        String?  // 其他关键期限说明
+  street               String?  // 所属街道
+
+  // 初审
+  reviewedById   String?
+  reviewedBy     User?   @relation("ReviewedCases", fields: [reviewedById], references: [id])
+  reviewedAt     DateTime?
+  reviewNotes    String?
+  incomeQualified Boolean? // 经济困难资格初审是否通过
+
+  // 承办律师
+  lawyerId       String?
+  lawyer         User?   @relation("LawyerCases", fields: [lawyerId], references: [id])
+
+  ruleNotes      String? // 特殊规则命中说明
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  closedAt       DateTime?
+
+  materials      Material[]
+  keyDates       KeyDate[]
+  tasks          Task[]
+  appointments   Appointment[]
+  referrals      Referral[]
+  conflictChecks ConflictCheck[]
+  events         CaseEvent[]
+  archive        Archive?
+  serviceOrder   ServiceOrder?
+}
+
+// 证据材料
+enum MaterialStatus {
+  MISSING          // 待补（工作人员/律师登记的要求补交项）
+  RECEIVED         // 已提交待核验
+  NEEDS_CORRECTION // 需补正
+  VERIFIED         // 已核验
+}
+
+model Material {
+  id         String @id @default(cuid())
+  caseId     String
+  case       Case   @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  name       String
+  kind       String? // 证据类型：合同/票据/照片/聊天记录/鉴定等
+  status     MaterialStatus @default(RECEIVED)
+  filePath   String? // 上传文件存储路径（线下补录可仅登记无文件）
+  note       String?
+  uploadedById String?
+  uploadedBy   User?   @relation(fields: [uploadedById], references: [id])
+  createdAt  DateTime @default(now())
+}
+
+// 关键时间节点
+model KeyDate {
+  id     String @id @default(cuid())
+  caseId String
+  case   Case   @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  label  String // 如：仲裁时效届满、开庭日、合同到期日
+  date   DateTime
+  kind   String? // statute / court / other
+}
+
+// 服务单（一个案件一张服务单，多角色协同推进）
+enum ServiceOrderStatus {
+  OPEN
+  IN_PROGRESS
+  DONE
+}
+
+model ServiceOrder {
+  id        String @id @default(cuid())
+  orderNo   String @unique
+  caseId    String @unique
+  case      Case   @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  status    ServiceOrderStatus @default(OPEN)
+  createdAt DateTime @default(now())
+  participants ServiceOrderParticipant[]
+}
+
+model ServiceOrderParticipant {
+  id             String @id @default(cuid())
+  serviceOrderId String
+  serviceOrder   ServiceOrder @relation(fields: [serviceOrderId], references: [id], onDelete: Cascade)
+  userId         String
+  user           User   @relation(fields: [userId], references: [id])
+  duty           String? // 在服务单中的分工说明
+  joinedAt       DateTime @default(now())
+  @@unique([serviceOrderId, userId])
+}
+
+// 协同任务
+enum TaskType {
+  MATERIAL_SUPPLEMENT // 材料补正
+  HOME_VISIT          // 上门协助（老人/残障）
+  CONFLICT_CHECK      // 利益冲突核查
+  FOLLOW_UP           // 回访
+  COORDINATION        // 多单位协同
+  REASSIGNMENT        // 重新指派（律师请假等）
+  DEADLINE_WATCH      // 关键期限盯办
+  OTHER
+}
+
+enum TaskStatus {
+  OPEN
+  IN_PROGRESS
+  DONE
+  CANCELLED
+}
+
+model Task {
+  id           String @id @default(cuid())
+  caseId       String
+  case         Case   @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  type         TaskType @default(OTHER)
+  title        String
+  description  String?
+  status       TaskStatus @default(OPEN)
+  assigneeId   String? // 指定到人；为空则按 assigneeRole 抢单/办理
+  assignee     User?   @relation("TaskAssignee", fields: [assigneeId], references: [id])
+  assigneeRole Role?   // 指定到角色（如任意志愿者）
+  dueDate      DateTime?
+  createdById  String?
+  createdBy    User?   @relation("TaskCreator", fields: [createdById], references: [id])
+  createdAt    DateTime @default(now())
+  completedAt  DateTime?
+}
+
+// 预约（居民与律师的咨询预约）
+enum AppointmentStatus {
+  PENDING
+  CONFIRMED
+  COMPLETED
+  CANCELLED
+}
+
+model Appointment {
+  id          String @id @default(cuid())
+  caseId      String
+  case        Case   @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  lawyerId    String?
+  lawyer      User?  @relation("LawyerAppointments", fields: [lawyerId], references: [id])
+  scheduledAt DateTime
+  location    String? // 社区服务中心/线上电话等
+  status      AppointmentStatus @default(PENDING)
+  note        String?
+  createdAt   DateTime @default(now())
+}
+
+// 利益冲突核查
+model ConflictCheck {
+  id          String @id @default(cuid())
+  caseId      String
+  case        Case   @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  lawyerId    String
+  lawyer      User   @relation(fields: [lawyerId], references: [id])
+  parties     String // 核查的冲突主体
+  hasConflict Boolean
+  note        String?
+  checkedAt   DateTime @default(now())
+}
+
+// 转介（司法所转介 / 跨街道转介 / 其他单位）
+enum ReferralStatus {
+  PENDING
+  ACCEPTED
+  REJECTED
+  COMPLETED
+}
+
+model Referral {
+  id          String @id @default(cuid())
+  caseId      String
+  case        Case   @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  type        String // JUDICIAL / CROSS_STREET / OTHER_ORG
+  fromStreet  String?
+  toStreet    String?
+  toUnit      String // 接收单位
+  reason      String?
+  status      ReferralStatus @default(PENDING)
+  createdById String?
+  createdBy   User?   @relation(fields: [createdById], references: [id])
+  createdAt   DateTime @default(now())
+  handledAt   DateTime?
+}
+
+// 结案档案
+model Archive {
+  id                 String @id @default(cuid())
+  caseId             String @unique
+  case               Case   @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  consultationOpinion String? // 咨询意见
+  materialCorrections String? // 材料补正记录
+  referralDestination String? // 转介去向
+  lawyerHours        Float?   // 律师工时（小时）
+  followUpResult     String?  // 回访结果
+  satisfaction       Int?     // 居民满意度 1-5
+  satisfactionNote   String?
+  closedById         String?
+  closedAt           DateTime @default(now())
+}
+
+// 案件时间线（审计/协同可见）
+model CaseEvent {
+  id        String @id @default(cuid())
+  caseId    String
+  case      Case   @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  actorId   String?
+  actor     User?  @relation(fields: [actorId], references: [id])
+  action    String
+  detail    String?
+  createdAt DateTime @default(now())
+}

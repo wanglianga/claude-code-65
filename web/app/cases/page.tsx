@@ -5,14 +5,16 @@ import { useRouter } from 'next/navigation'
 import { useCallback, useEffect, useState } from 'react'
 import { Badge, Empty, ErrorBox, Loading, Nav } from '../components'
 import {
-  api, CATEGORY_LABELS, fmtDate, getUser, priorityBadge, PRIORITY_LABELS,
-  SOURCE_LABELS, specialFlags, statusBadge, STATUS_LABELS, TYPE_LABELS, SessionUser,
+  api, CATEGORY_LABELS, fmtDate, getUser, priorityBadge, PRIORITY_LABELS, riskBadge, RISK_LABELS,
+  SOURCE_LABELS, specialFlags, statusBadge, STATUS_LABELS, TIMELINESS_LABELS, timelinessBadge,
+  TYPE_LABELS, INTENT_LABELS, SessionUser,
 } from '../lib'
 
 export default function CasesPage() {
   const router = useRouter()
   const [user, setUser] = useState<SessionUser | null>(null)
   const [cases, setCases] = useState<any[] | null>(null)
+  const [risks, setRisks] = useState<any[] | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [filters, setFilters] = useState({ status: '', type: '', special: '', search: '' })
 
@@ -34,6 +36,13 @@ export default function CasesPage() {
   }, [router])
 
   useEffect(() => { if (user) load() }, [user, load])
+
+  // 工作人员/司法所/管理员：加载期限风险预警（首页置顶，避免紧急案件被淹没）
+  useEffect(() => {
+    if (user && ['STAFF', 'ADMIN', 'JUDICIAL'].includes(user.role)) {
+      api('/cases/deadline-risks').then(setRisks).catch(() => setRisks([]))
+    }
+  }, [user])
 
   if (!user) return null
   const canCreate = ['RESIDENT', 'STAFF', 'ADMIN'].includes(user.role)
@@ -78,6 +87,45 @@ export default function CasesPage() {
         </div>
 
         <ErrorBox error={error} />
+
+        {/* ---------- 期限风险预警（工作人员首页置顶） ---------- */}
+        {risks && risks.length > 0 && (
+          <div className="card mt16" style={{ borderColor: 'var(--red)', borderWidth: 2 }}>
+            <h2 style={{ borderLeftColor: 'var(--red)' }}>⏰ 期限风险预警（{risks.length} 件需优先处理）</h2>
+            <table className="table">
+              <thead>
+                <tr><th>风险</th><th>案件</th><th>剩余期限</th><th>证据</th><th>居民意愿</th><th>最近提醒</th></tr>
+              </thead>
+              <tbody>
+                {risks.map((r) => (
+                  <tr key={r.id} style={{ cursor: 'pointer' }} onClick={() => router.push(`/cases/${r.id}`)}>
+                    <td><Badge text={RISK_LABELS[r.risk.level]} cls={riskBadge(r.risk.level)} /></td>
+                    <td>
+                      <div style={{ fontWeight: 600 }}>{r.title}</div>
+                      <div className="muted" style={{ fontSize: 12 }}>{r.caseNo} · {TYPE_LABELS[r.type]} · {r.applicantName}</div>
+                    </td>
+                    <td>
+                      {r.risk.daysLeft !== null ? (
+                        r.risk.daysLeft < 0
+                          ? <span style={{ color: 'var(--red)', fontWeight: 700 }}>已逾期 {-r.risk.daysLeft} 天</span>
+                          : <span style={{ color: r.risk.daysLeft <= 30 ? 'var(--red)' : 'var(--orange)', fontWeight: 600 }}>剩 {r.risk.daysLeft} 天</span>
+                      ) : '—'}
+                      <div className="muted" style={{ fontSize: 12 }}>{fmtDate(r.risk.deadline)}</div>
+                    </td>
+                    <td className="muted">{r.evidence.verified}/{r.evidence.total} 已核验</td>
+                    <td>{r.residentIntent ? <Badge text={INTENT_LABELS[r.residentIntent]} cls="badge-blue" /> : <span className="muted">未登记</span>}</td>
+                    <td>
+                      {r.lastReminder
+                        ? <Badge text={TIMELINESS_LABELS[r.lastReminder.timeliness]} cls={timelinessBadge(r.lastReminder.timeliness)} />
+                        : <span className="muted">未提醒</span>}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+
         {!cases ? <Loading /> : cases.length === 0 ? <Empty text="暂无案件" /> : (
           <div className="card" style={{ padding: 0 }}>
             <table className="table">
@@ -106,7 +154,11 @@ export default function CasesPage() {
                     <td><Badge text={STATUS_LABELS[c.status]} cls={statusBadge(c.status)} /></td>
                     <td><Badge text={PRIORITY_LABELS[c.priority]} cls={priorityBadge(c.priority)} /></td>
                     <td>
-                      {specialFlags(c).map((f) => <Badge key={f} text={f} cls="badge-red" />)}&nbsp;
+                      {specialFlags(c).map((f) => <Badge key={f} text={f} cls="badge-red" />)}
+                      {['MEDIUM', 'HIGH', 'EXPIRED'].includes(c.deadlineRisk) && (
+                        <Badge text={`⏰${RISK_LABELS[c.deadlineRisk]}`} cls={riskBadge(c.deadlineRisk)} />
+                      )}
+                      &nbsp;
                     </td>
                     <td className="muted">{fmtDate(c.createdAt)}</td>
                   </tr>

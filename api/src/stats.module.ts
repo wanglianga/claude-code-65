@@ -12,6 +12,7 @@ export class StatsService {
       total, closed, byStatus, byType, byCategory, bySource, byPriority,
       dv, wage, elderly, minor, disabled, opponentSued,
       satisfactionAgg, hoursAgg, archives, materials, tasksOpen,
+      reminderRows, riskRows,
     ] = await Promise.all([
       this.prisma.case.count(),
       this.prisma.case.count({ where: { status: 'CLOSED' } }),
@@ -31,6 +32,8 @@ export class StatsService {
       this.prisma.archive.findMany({ select: { closedAt: true, case: { select: { createdAt: true } } } }),
       this.prisma.material.count(),
       this.prisma.task.count({ where: { status: { in: ['OPEN', 'IN_PROGRESS'] } } }),
+      this.prisma.deadlineReminder.groupBy({ by: ['timeliness'], _count: true }),
+      this.prisma.case.groupBy({ by: ['deadlineRisk'], _count: true, where: { status: { notIn: ['CLOSED', 'REFERRED'] } } }),
     ])
     let avgCloseDays: number | null = null
     if (archives.length) {
@@ -39,6 +42,8 @@ export class StatsService {
     }
     const toMap = (rows: any[], key: string) =>
       Object.fromEntries(rows.map((r) => [r[key] ?? '未分流', r._count]))
+    const reminderMap = toMap(reminderRows, 'timeliness')
+    const reminderTotal = reminderRows.reduce((acc, r) => acc + r._count, 0)
     return {
       total, closed, open: total - closed, materials, tasksOpen,
       avgCloseDays,
@@ -51,6 +56,18 @@ export class StatsService {
       bySource: toMap(bySource, 'source'),
       byPriority: toMap(byPriority, 'priority'),
       special: { domesticViolence: dv, wageArrearsGroup: wage, elderlySupport: elderly, minorRelated: minor, disabled, opponentSued },
+      // 期限风险与提醒及时性（服务质量复盘）
+      deadlineRisks: {
+        HIGH: toMap(riskRows, 'deadlineRisk').HIGH || 0,
+        MEDIUM: toMap(riskRows, 'deadlineRisk').MEDIUM || 0,
+        EXPIRED: toMap(riskRows, 'deadlineRisk').EXPIRED || 0,
+      },
+      reminders: {
+        total: reminderTotal,
+        timely: reminderMap.TIMELY || 0,
+        late: reminderMap.LATE || 0,
+        missed: reminderMap.MISSED || 0,
+      },
     }
   }
 

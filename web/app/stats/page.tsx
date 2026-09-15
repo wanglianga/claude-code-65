@@ -78,6 +78,19 @@ export default function StatsPage() {
               </div>
             </div>
 
+            <div className="card">
+              <h2>期限风险与提醒及时性（服务质量复盘）</h2>
+              <div className="stat-cards" style={{ marginBottom: 0 }}>
+                <div className="stat-card"><div className="num" style={{ color: 'var(--red)' }}>{data.deadlineRisks?.EXPIRED ?? 0}</div><div className="cap">已逾期案件</div></div>
+                <div className="stat-card"><div className="num" style={{ color: 'var(--red)' }}>{data.deadlineRisks?.HIGH ?? 0}</div><div className="cap">高风险案件</div></div>
+                <div className="stat-card"><div className="num" style={{ color: 'var(--orange)' }}>{data.deadlineRisks?.MEDIUM ?? 0}</div><div className="cap">中风险案件</div></div>
+                <div className="stat-card"><div className="num">{data.reminders?.total ?? 0}</div><div className="cap">期限提醒总数</div></div>
+                <div className="stat-card"><div className="num" style={{ color: 'var(--green)' }}>{data.reminders?.timely ?? 0}</div><div className="cap">提醒及时</div></div>
+                <div className="stat-card"><div className="num" style={{ color: 'var(--orange)' }}>{data.reminders?.late ?? 0}</div><div className="cap">临近才提醒</div></div>
+                <div className="stat-card"><div className="num" style={{ color: 'var(--red)' }}>{data.reminders?.missed ?? 0}</div><div className="cap">逾期才提醒</div></div>
+              </div>
+            </div>
+
             <div className="grid-2">
               <BarChart title="案件类型分布" data={data.byType} labels={TYPE_LABELS} />
               <BarChart title="分流去向分布" data={data.byCategory} labels={CATEGORY_LABELS} />

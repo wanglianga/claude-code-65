@@ -15,7 +15,7 @@ export default function NewCasePage() {
   const [form, setForm] = useState<any>({
     title: '', type: 'LABOR_DISPUTE', description: '', urgency: 'NORMAL',
     source: 'OFFLINE_PAPER', applicantName: '', applicantPhone: '',
-    familyIncome: '', opposingParties: '', statuteOfLimitations: '', deadlineNotes: '', street: '',
+    familyIncome: '', opposingParties: '', statuteOfLimitations: '', incidentDate: '', deadlineNotes: '', street: '',
     isDisabled: false, involvesMinor: false, isWageArrearsGroup: false,
     isDomesticViolence: false, isElderlySupport: false, isMinorRights: false, opponentSued: false,
   })
@@ -42,6 +42,7 @@ export default function NewCasePage() {
         ...form,
         familyIncome: form.familyIncome === '' ? undefined : Number(form.familyIncome),
         statuteOfLimitations: form.statuteOfLimitations || undefined,
+        incidentDate: form.incidentDate || undefined,
         keyDates: keyDates.filter((k) => k.label && k.date),
       }
       if (!isStaff) { delete payload.source; delete payload.applicantName; delete payload.applicantPhone }
@@ -143,6 +144,10 @@ export default function NewCasePage() {
             <h3>关键时间节点</h3>
             <div className="form-grid">
               <div>
+                <label className="label">事件发生日期（欠薪开始日 / 租约到期日等）</label>
+                <input className="input" type="date" value={form.incidentDate} onChange={(e) => set('incidentDate', e.target.value)} />
+              </div>
+              <div>
                 <label className="label">诉讼时效届满日（如知道）</label>
                 <input className="input" type="date" value={form.statuteOfLimitations} onChange={(e) => set('statuteOfLimitations', e.target.value)} />
               </div>
@@ -151,6 +156,11 @@ export default function NewCasePage() {
                 <input className="input" value={form.deadlineNotes} onChange={(e) => set('deadlineNotes', e.target.value)} placeholder="如：仲裁申请期限、举证期限等" />
               </div>
             </div>
+            {(form.type === 'LABOR_DISPUTE' || form.type === 'HOUSING_RENTAL') && form.incidentDate && !form.statuteOfLimitations && (
+              <div className="alert alert-blue mt8">
+                平台将按{form.type === 'LABOR_DISPUTE' ? '劳动仲裁时效（1年）' : '民事诉讼时效（3年）'}自事件发生日推算关键期限，并进行期限风险评估。
+              </div>
+            )}
             {keyDates.map((k, i) => (
               <div className="row mt8" key={i}>
                 <input className="input" style={{ width: 240 }} placeholder="节点名称，如：开庭日" value={k.label}

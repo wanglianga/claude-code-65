@@ -6,7 +6,14 @@ import {
 } from '@nestjs/common'
 import { PrismaService } from '../prisma.service'
 import { JwtUser } from '../common'
-import { buildAutoTasks, computeSpecialRules, maskName, maskPhone } from './rules'
+import {
+  assessDeadlineRisk,
+  buildAutoTasks,
+  computeSpecialRules,
+  maskName,
+  maskPhone,
+  MATERIAL_CHECKLISTS,
+} from './rules'
 
 // 严格解析工时等必填数值：空串、纯空格、null、undefined、布尔、非有限数、负数一律无效
 function parseStrictHours(v: any): number | null {
@@ -45,6 +52,7 @@ const CASE_INCLUDE = {  resident: { select: { id: true, name: true, phone: true 
   serviceOrder: {
     include: { participants: { include: { user: { select: { id: true, name: true, role: true, organization: true } } } } },
   },
+  reminders: { include: { remindedBy: { select: { id: true, name: true } } }, orderBy: { createdAt: 'desc' as const } },
 }
 
 @Injectable()
@@ -62,6 +70,25 @@ export class CasesService {
 
   private async event(caseId: string, actorId: string | null, action: string, detail?: string) {
     await this.prisma.caseEvent.create({ data: { caseId, actorId, action, detail } })
+  }
+
+  // 重新评估期限风险并持久化（提交/初审/材料核验变化时调用）
+  private async refreshDeadlineRisk(caseId: string) {
+    const kase = await this.prisma.case.findUnique({
+      where: { id: caseId },
+      include: { materials: { select: { status: true } }, keyDates: true },
+    })
+    if (!kase) return null
+    const risk = assessDeadlineRisk(kase)
+    await this.prisma.case.update({
+      where: { id: caseId },
+      data: {
+        deadlineRisk: risk.level,
+        deadlineRiskReason: risk.reasons.join('；') || null,
+        estimatedDeadline: risk.deadline,
+      },
+    })
+    return risk
   }
 
   private async getCaseOr404(id: string) {
@@ -140,6 +167,7 @@ export class CasesService {
         opponentSued: !!dto.opponentSued,
         opposingParties: dto.opposingParties || null,
         statuteOfLimitations: dto.statuteOfLimitations ? new Date(dto.statuteOfLimitations) : null,
+        incidentDate: dto.incidentDate ? new Date(dto.incidentDate) : null,
         deadlineNotes: dto.deadlineNotes || null,
         street: dto.street || null,
         keyDates: dto.keyDates?.length
@@ -154,6 +182,10 @@ export class CasesService {
     await this.event(kase.id, user.sub, sourceLabel[source] || '提交咨询', isStaffIntake ? `工作人员代录（申请人：${dto.applicantName}）` : undefined)
     if (rules.reasons.length) {
       await this.event(kase.id, null, '命中特殊规则', rules.reasons.join('；'))
+    }
+    const risk = await this.refreshDeadlineRisk(kase.id)
+    if (risk && ['HIGH', 'EXPIRED'].includes(risk.level)) {
+      await this.event(kase.id, null, '期限风险评估', risk.reasons.join('；'))
     }
     return this.findOne(user, kase.id)
   }
@@ -206,6 +238,8 @@ export class CasesService {
   async findOne(user: JwtUser, id: string) {
     const kase = await this.getCaseOr404(id)
     this.assertCanView(kase, user)
+    // 附带实时期限风险评估（随时间推移动态变化）
+    ;(kase as any).riskInfo = assessDeadlineRisk(kase)
     return this.maskIfNeeded(kase, user)
   }
 
@@ -277,6 +311,7 @@ export class CasesService {
       })
     }
     await this.event(id, user.sub, '资格初审', `分流为：${dto.category}；${dto.reviewNotes || ''}`)
+    await this.refreshDeadlineRisk(id)
     return this.findOne(user, updated.id)
   }
 
@@ -376,6 +411,7 @@ export class CasesService {
       await this.prisma.case.update({ where: { id }, data: { status: kase.lawyerId ? 'IN_SERVICE' : 'CLASSIFIED' } })
       await this.event(id, null, '材料已补交', '案件回到办理流程')
     }
+    await this.refreshDeadlineRisk(id)
     return material
   }
 
@@ -404,6 +440,7 @@ export class CasesService {
       data: { status: dto.status, note: dto.note ?? m.note },
     })
     await this.event(m.caseId, user.sub, '核验材料', `${m.name} → ${dto.status}${dto.note ? `：${dto.note}` : ''}`)
+    await this.refreshDeadlineRisk(m.caseId)
     return updated
   }
 
@@ -629,5 +666,122 @@ export class CasesService {
     await this.prisma.archive.update({ where: { caseId: id }, data: { followUpResult: dto.result } })
     await this.event(id, user.sub, '回访登记', dto.result)
     return this.findOne(user, id)
+  }
+
+  // ---------- 期限风险管理 ----------
+
+  // 工作人员首页：期限风险预警列表（实时评估，避免紧急案件被普通咨询淹没）
+  async deadlineRisks(user: JwtUser) {
+    const openCases = await this.prisma.case.findMany({
+      where: { status: { notIn: ['CLOSED', 'REFERRED'] } },
+      include: {
+        materials: { select: { status: true } },
+        keyDates: true,
+        reminders: { orderBy: { createdAt: 'desc' }, take: 1, include: { remindedBy: { select: { id: true, name: true } } } },
+      },
+      orderBy: { createdAt: 'desc' },
+      take: 500,
+    })
+    const items = openCases
+      .map((c) => {
+        const risk = assessDeadlineRisk(c)
+        const verified = c.materials.filter((m) => m.status === 'VERIFIED').length
+        return {
+          id: c.id,
+          caseNo: c.caseNo,
+          title: c.title,
+          type: c.type,
+          status: c.status,
+          priority: c.priority,
+          applicantName: c.confidentiality === 'NORMAL' ? c.applicantName : maskName(c.applicantName),
+          risk,
+          evidence: { verified, total: c.materials.length },
+          residentIntent: c.residentIntent,
+          lastReminder: c.reminders[0] || null,
+        }
+      })
+      .filter((i) => ['MEDIUM', 'HIGH', 'EXPIRED'].includes(i.risk.level))
+      .sort((a, b) => (a.risk.daysLeft ?? 99999) - (b.risk.daysLeft ?? 99999))
+    return items
+  }
+
+  // 生成标准材料清单（登记为待补材料并通知居民）
+  async generateChecklist(user: JwtUser, id: string) {
+    const kase = await this.getCaseOr404(id)
+    if (kase.status === 'CLOSED') throw new BadRequestException('案件已结案')
+    const list = MATERIAL_CHECKLISTS[kase.type]
+    if (!list) throw new BadRequestException('该案件类型暂无标准材料清单')
+    const existing = new Set(kase.materials.map((m) => m.name))
+    const toCreate = list.filter((name) => !existing.has(name))
+    for (const name of toCreate) {
+      await this.prisma.material.create({
+        data: { caseId: id, name, status: 'MISSING', note: '按标准清单待补', uploadedById: user.sub },
+      })
+    }
+    if (toCreate.length && kase.residentId) {
+      await this.prisma.task.create({
+        data: {
+          caseId: id,
+          type: 'MATERIAL_SUPPLEMENT',
+          title: `请按材料清单准备 ${toCreate.length} 项材料（期限风险案件）`,
+          assigneeId: kase.residentId,
+          assigneeRole: 'RESIDENT',
+          createdById: user.sub,
+        },
+      })
+    }
+    await this.event(id, user.sub, '生成材料清单', `新增 ${toCreate.length} 项待补材料`)
+    await this.refreshDeadlineRisk(id)
+    return this.findOne(user, id)
+  }
+
+  // 记录居民是否愿意立即启动程序
+  async setResidentIntent(user: JwtUser, id: string, dto: any) {
+    const kase = await this.getCaseOr404(id)
+    const labels: Record<string, string> = { WILLING: '愿意立即启动程序', NOT_YET: '暂缓考虑', DECLINED: '放弃申请' }
+    await this.prisma.case.update({
+      where: { id },
+      data: { residentIntent: dto.intent, residentIntentNote: dto.note || null },
+    })
+    await this.event(id, user.sub, '居民意愿登记', `${labels[dto.intent] || dto.intent}${dto.note ? `：${dto.note}` : ''}`)
+    if (dto.intent === 'WILLING' && kase.category === 'LEGAL_AID' && !kase.lawyerId) {
+      await this.prisma.task.create({
+        data: {
+          caseId: id,
+          type: 'OTHER',
+          title: '居民愿意立即启动程序，请优先指派值班律师',
+          assigneeRole: 'STAFF',
+          createdById: user.sub,
+        },
+      })
+    }
+    return this.findOne(user, id)
+  }
+
+  // 登记期限提醒并评估及时性（用于服务质量复盘）
+  async addReminder(user: JwtUser, id: string, dto: any) {
+    const kase = await this.getCaseOr404(id)
+    const risk = assessDeadlineRisk(kase)
+    const daysLeft = risk.daysLeft
+    const timeliness = daysLeft === null ? 'TIMELY' : daysLeft > 7 ? 'TIMELY' : daysLeft >= 0 ? 'LATE' : 'MISSED'
+    const reminder = await this.prisma.deadlineReminder.create({
+      data: {
+        caseId: id,
+        channel: dto.channel,
+        note: dto.note || null,
+        timeliness,
+        daysLeftAtReminder: daysLeft,
+        remindedById: user.sub,
+      },
+    })
+    const channelLabels: Record<string, string> = { PHONE: '电话', VISIT: '上门', MESSAGE: '平台消息', OTHER: '其他' }
+    const timeLabels: Record<string, string> = { TIMELY: '提醒及时', LATE: '临近才提醒', MISSED: '逾期才提醒' }
+    await this.event(
+      id,
+      user.sub,
+      `期限提醒（${channelLabels[dto.channel] || dto.channel}）`,
+      `${dto.note || '已提醒居民关键期限'}；距期限 ${daysLeft === null ? '未知' : daysLeft + ' 天'}（${timeLabels[timeliness]}）`,
+    )
+    return reminder
   }
 }

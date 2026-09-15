@@ -55,6 +55,7 @@ async function main() {
         isWageArrearsGroup: true,
         opposingParties: '味美餐饮管理有限公司（法定代表人：吴某）',
         statuteOfLimitations: new Date(now + 20 * day),
+        incidentDate: new Date(now - 340 * day),
         street: '朝阳街道',
         reviewedById: staff.id,
         reviewedAt: new Date(now - 10 * day),
@@ -84,6 +85,7 @@ async function main() {
     ] })
     await prisma.appointment.create({ data: { caseId: kase.id, lawyerId: lawyer1.id, scheduledAt: new Date(now + 2 * day), location: '阳光社区服务中心二楼调解室', status: 'CONFIRMED', note: '集体咨询，请12名员工派3名代表参加' } })
     await prisma.conflictCheck.create({ data: { caseId: kase.id, lawyerId: lawyer1.id, parties: '味美餐饮管理有限公司', hasConflict: false, note: '本所及本人与该企业无代理关系' } })
+    await prisma.deadlineReminder.create({ data: { caseId: kase.id, channel: 'MESSAGE', note: '已告知居民仲裁时效临近，请尽快备齐材料', timeliness: 'TIMELY', daysLeftAtReminder: 25, remindedById: staff.id, createdAt: new Date(now - 5 * day) } })
     await prisma.caseEvent.createMany({ data: [
       { caseId: kase.id, actorId: resident1.id, action: '提交咨询', detail: '线上提交劳动纠纷咨询' },
       { caseId: kase.id, actorId: staff.id, action: '资格初审', detail: '分流为：法律援助；经济困难初审通过' },
@@ -205,6 +207,7 @@ async function main() {
         opponentSued: true,
         opposingParties: '房东刘某',
         statuteOfLimitations: new Date(now + 25 * day),
+        incidentDate: new Date(now - 1065 * day),
         street: '朝阳街道',
         ruleNotes: '对方已起诉：需尽快应诉；诉讼时效临近：升级为紧急',
         keyDates: { create: [{ label: '法院传票答辩期届满', date: new Date(now + 12 * day), kind: 'court' }] },
@@ -305,7 +308,114 @@ async function main() {
     return kase
   })
 
+  // 7) 租赁纠纷：无明确时效日期，按事件日期推算期限（证据不足 → 高风险）
+  await ensureCase('LA20260913-0007', async () => {
+    const kase = await prisma.case.create({
+      data: {
+        caseNo: 'LA20260913-0007',
+        title: '租约到期近三年，房东拒退押金',
+        type: 'HOUSING_RENTAL',
+        description: '租约到期后房东以物品损耗为由拒退押金5200元，申请人多次协商未果，担心拖过诉讼时效。',
+        source: 'ONLINE',
+        status: 'SUBMITTED',
+        urgency: 'NORMAL',
+        priority: 'HIGH',
+        applicantName: '张大山',
+        applicantPhone: '13911110001',
+        residentId: resident1.id,
+        familyIncome: 4500,
+        opposingParties: '房东周某',
+        incidentDate: new Date(now - 1055 * day),
+        street: '朝阳街道',
+        ruleNotes: '期限按民事诉讼时效（3年）自事件日期推算',
+      },
+    })
+    await prisma.material.create({ data: { caseId: kase.id, name: '租赁合同照片', kind: '合同', status: 'RECEIVED', uploadedById: resident1.id } })
+    await prisma.caseEvent.create({ data: { caseId: kase.id, actorId: resident1.id, action: '提交咨询' } })
+    return kase
+  })
+
+  // 8) 欠薪纠纷：仲裁时效已过（EXPIRED），含逾期提醒记录
+  await ensureCase('LA20260913-0008', async () => {
+    const kase = await prisma.case.create({
+      data: {
+        caseNo: 'LA20260913-0008',
+        title: '被拖欠工资一年多，担心已过仲裁时效',
+        type: 'LABOR_DISPUTE',
+        description: '申请人离职时被拖欠两个月工资13000元，一直协商未果，近期才得知劳动仲裁时效问题，担心已经过期。',
+        source: 'HOTLINE',
+        status: 'SUBMITTED',
+        urgency: 'HIGH',
+        priority: 'URGENT',
+        applicantName: '刘桂芳',
+        applicantPhone: '13911110002',
+        residentId: resident2.id,
+        familyIncome: 3800,
+        isWageArrearsGroup: true,
+        opposingParties: '某家政服务公司',
+        incidentDate: new Date(now - 400 * day),
+        street: '朝阳街道',
+        ruleNotes: '欠薪群体：高优先级，联动劳动监察；关键期限已届满：升级为紧急',
+      },
+    })
+    await prisma.deadlineReminder.create({
+      data: { caseId: kase.id, channel: 'PHONE', note: '联系居民告知仲裁时效已过，建议尽快到社区评估补救途径', timeliness: 'MISSED', daysLeftAtReminder: -33, remindedById: staff.id, createdAt: new Date(now - 2 * day) },
+    })
+    await prisma.caseEvent.createMany({ data: [
+      { caseId: kase.id, actorId: staff.id, action: '热线转入登记' },
+      { caseId: kase.id, actorId: staff.id, action: '期限提醒（电话）', detail: '联系居民告知仲裁时效已过；距期限 -33 天（逾期才提醒）' },
+    ] })
+    return kase
+  })
+
+  // 启动时刷新全部案件的期限风险持久化字段（随时间推移保持准确）
+  await refreshAllRisks()
+
   console.log('Seed completed.')
+}
+
+// 与后端规则一致的期限风险评估（简版，用于启动时刷新持久化字段）
+const LIMITATION_YEARS = { LABOR_DISPUTE: 1, HOUSING_RENTAL: 3 }
+function assessRisk(kase) {
+  let deadline = kase.statuteOfLimitations ? new Date(kase.statuteOfLimitations) : null
+  if (!deadline) {
+    const kd = (kase.keyDates || [])
+      .filter((k) => k.kind === 'statute' || k.kind === 'court')
+      .map((k) => new Date(k.date))
+      .sort((a, b) => a - b)[0]
+    if (kd) deadline = kd
+  }
+  if (!deadline && LIMITATION_YEARS[kase.type] && kase.incidentDate) {
+    deadline = new Date(kase.incidentDate)
+    deadline.setFullYear(deadline.getFullYear() + LIMITATION_YEARS[kase.type])
+  }
+  if (!deadline) return { level: 'NONE', deadline: null, reasons: [] }
+  const daysLeft = Math.ceil((deadline.getTime() - Date.now()) / 86400000)
+  if (['CLOSED', 'REFERRED'].includes(kase.status)) return { level: 'NONE', deadline, reasons: ['案件已办结/已转介'] }
+  const reasons = []
+  let level
+  if (daysLeft < 0) { level = 'EXPIRED'; reasons.push(`关键期限已于 ${-daysLeft} 天前届满`) }
+  else if (daysLeft <= 30) { level = 'HIGH'; reasons.push(`距关键期限仅剩 ${daysLeft} 天`) }
+  else if (daysLeft <= 90) { level = 'MEDIUM'; reasons.push(`距关键期限还有 ${daysLeft} 天`) }
+  else { level = 'LOW'; reasons.push(`距关键期限 ${daysLeft} 天`) }
+  const verified = (kase.materials || []).filter((m) => m.status === 'VERIFIED').length
+  if (level !== 'EXPIRED' && daysLeft <= 90 && verified === 0) {
+    reasons.push('尚无已核验证据，举证准备不足')
+    if (level === 'MEDIUM') level = 'HIGH'
+  }
+  return { level, deadline, reasons }
+}
+
+async function refreshAllRisks() {
+  const cases = await prisma.case.findMany({ include: { materials: { select: { status: true } }, keyDates: true } })
+  for (const c of cases) {
+    const r = assessRisk(c)
+    await prisma.case.update({
+      where: { id: c.id },
+      data: { deadlineRisk: r.level, estimatedDeadline: r.deadline, deadlineRiskReason: r.reasons.join('；') || null },
+    })
+  }
+  console.log(`Refreshed deadline risk for ${cases.length} cases`)
 }
 
 main()

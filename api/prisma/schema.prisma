@@ -42,6 +42,7 @@ model User {
   conflictChecks ConflictCheck[]
   events         CaseEvent[]
   referrals      Referral[]
+  deadlineReminders DeadlineReminder[]
 }
 
 // ---------------- 案件 ----------------
@@ -132,6 +133,12 @@ model Case {
   opposingParties    String? // 冲突主体（对方当事人）
   statuteOfLimitations DateTime? // 诉讼时效届满日
   deadlineNotes        String?  // 其他关键期限说明
+  incidentDate         DateTime? // 事件发生日期（欠薪开始日、租约到期日等）
+  estimatedDeadline    DateTime? // 推算得出的关键期限（无明确时效日期时按案件类型法定时效推算）
+  deadlineRisk         String?   // 期限风险等级：LOW / MEDIUM / HIGH / EXPIRED
+  deadlineRiskReason   String?   // 期限风险评估说明
+  residentIntent       String?   // 居民是否愿意立即启动程序：WILLING / NOT_YET / DECLINED
+  residentIntentNote   String?
   street               String?  // 所属街道
 
   // 初审
@@ -159,6 +166,7 @@ model Case {
   events         CaseEvent[]
   archive        Archive?
   serviceOrder   ServiceOrder?
+  reminders      DeadlineReminder[]
 }
 
 // 证据材料
@@ -316,6 +324,20 @@ model Referral {
   createdBy   User?   @relation(fields: [createdById], references: [id])
   createdAt   DateTime @default(now())
   handledAt   DateTime?
+}
+
+// 期限提醒记录（工作人员提醒居民关键期限，及时性用于服务质量复盘）
+model DeadlineReminder {
+  id           String @id @default(cuid())
+  caseId       String
+  case         Case   @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  channel      String // PHONE / VISIT / MESSAGE / OTHER
+  note         String?
+  timeliness   String // TIMELY（及时）/ LATE（临近才提醒）/ MISSED（逾期才提醒）
+  daysLeftAtReminder Int? // 提醒时距关键期限天数
+  remindedById String?
+  remindedBy   User?  @relation(fields: [remindedById], references: [id])
+  createdAt    DateTime @default(now())
 }
 
 // 结案档案

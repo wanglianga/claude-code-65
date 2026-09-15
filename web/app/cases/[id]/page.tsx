@@ -4,11 +4,11 @@ import { useParams, useRouter } from 'next/navigation'
 import { useCallback, useEffect, useState } from 'react'
 import { Badge, Empty, ErrorBox, Loading, Nav, OkBox } from '../../components'
 import {
-  api, APPT_STATUS_LABELS, CATEGORY_LABELS, CONF_LABELS, confBadge, daysLeft, fmtDate, fmtDateTime,
-  getUser, MATERIAL_STATUS_LABELS, materialStatusBadge, priorityBadge, PRIORITY_LABELS,
-  REFERRAL_STATUS_LABELS, REFERRAL_TYPE_LABELS, ROLE_LABELS, SessionUser, SOURCE_LABELS,
+  api, APPT_STATUS_LABELS, CATEGORY_LABELS, CHANNEL_LABELS, CONF_LABELS, confBadge, daysLeft, fmtDate, fmtDateTime,
+  getUser, INTENT_LABELS, MATERIAL_STATUS_LABELS, materialStatusBadge, priorityBadge, PRIORITY_LABELS,
+  REFERRAL_STATUS_LABELS, REFERRAL_TYPE_LABELS, RISK_LABELS, riskBadge, ROLE_LABELS, SessionUser, SOURCE_LABELS,
   specialFlags, statusBadge, STATUS_LABELS, TASK_STATUS_LABELS, TASK_TYPE_LABELS, taskStatusBadge,
-  TYPE_LABELS, URGENCY_LABELS,
+  TIMELINESS_LABELS, timelinessBadge, TYPE_LABELS, URGENCY_LABELS,
 } from '../../lib'
 
 export default function CaseDetailPage() {
@@ -109,6 +109,15 @@ export default function CaseDetailPage() {
               {statuteDays !== null && statuteDays <= 30 && kase.status !== 'CLOSED' && (
                 <div className="alert alert-red mt8">⚠️ 诉讼时效临近：距离届满仅剩 <b>{Math.max(statuteDays, 0)}</b> 天（{fmtDate(kase.statuteOfLimitations)}），请优先处理！</div>
               )}
+              {kase.riskInfo && ['MEDIUM', 'HIGH', 'EXPIRED'].includes(kase.riskInfo.level) && (
+                <div className={`alert mt8 ${kase.riskInfo.level === 'MEDIUM' ? 'alert-orange' : 'alert-red'}`}>
+                  ⏰ <b>期限风险：{RISK_LABELS[kase.riskInfo.level]}</b>
+                  {kase.riskInfo.deadline && <>（关键期限 {fmtDate(kase.riskInfo.deadline)}{kase.riskInfo.daysLeft !== null && (kase.riskInfo.daysLeft < 0 ? `，已逾期 ${-kase.riskInfo.daysLeft} 天` : `，剩余 ${kase.riskInfo.daysLeft} 天`)}）</>}
+                  <ul style={{ margin: '4px 0 0', paddingLeft: 18 }}>
+                    {kase.riskInfo.reasons.map((r: string, i: number) => <li key={i}>{r}</li>)}
+                  </ul>
+                </div>
+              )}
               {kase.opponentSued && kase.status !== 'CLOSED' && (
                 <div className="alert alert-orange mt8">⚠️ 对方已经起诉，申请人需尽快应诉，请加快分流与指派。</div>
               )}
@@ -133,7 +142,10 @@ export default function CaseDetailPage() {
                   <dt>家庭月收入</dt><dd>{kase.familyIncome != null ? `${kase.familyIncome} 元` : '—'}</dd>
                   <dt>紧急程度</dt><dd>{URGENCY_LABELS[kase.urgency]}</dd>
                   <dt>冲突主体</dt><dd>{kase.opposingParties || '—'}</dd>
+                  <dt>事件日期</dt><dd>{kase.incidentDate ? fmtDate(kase.incidentDate) : '—'}</dd>
                   <dt>诉讼时效</dt><dd>{kase.statuteOfLimitations ? `${fmtDate(kase.statuteOfLimitations)}${statuteDays !== null ? `（剩余 ${Math.max(statuteDays, 0)} 天）` : ''}` : '—'}</dd>
+                  <dt>推算关键期限</dt><dd>{kase.estimatedDeadline ? fmtDate(kase.estimatedDeadline) : '—'}</dd>
+                  <dt>居民意愿</dt><dd>{kase.residentIntent ? INTENT_LABELS[kase.residentIntent] : '未登记'}{kase.residentIntentNote ? `（${kase.residentIntentNote}）` : ''}</dd>
                   <dt>其他期限</dt><dd>{kase.deadlineNotes || '—'}</dd>
                   <dt>承办律师</dt><dd>{kase.lawyer ? `${kase.lawyer.name}（${kase.lawyer.organization || '—'}）` : '未指派'}</dd>
                   <dt>提交时间</dt><dd>{fmtDateTime(kase.createdAt)}</dd>
@@ -287,6 +299,41 @@ export default function CaseDetailPage() {
                 onAccept={() => run(() => api(`/cases/${kase.id}/accept`, { method: 'POST' }), '已接受案件')}
                 onDecline={(reason) => run(() => api(`/cases/${kase.id}/decline`, { method: 'POST', body: JSON.stringify({ reason }) }), '已退回案件')}
               />
+            )}
+
+            {/* ---------- 期限管理（工作人员） ---------- */}
+            {kase.status !== 'CLOSED' && (isStaff || (kase.reminders || []).length > 0) && (
+              <div className="card">
+                <h2>期限管理</h2>
+                {isStaff && (
+                  <DeadlinePanel
+                    kase={kase}
+                    onChecklist={() => run(() => api(`/cases/${kase.id}/material-checklist`, { method: 'POST' }), '已生成标准材料清单并通知居民')}
+                    onIntent={(dto) => run(() => api(`/cases/${kase.id}/resident-intent`, { method: 'POST', body: JSON.stringify(dto) }), '居民意愿已登记')}
+                    onRemind={(dto) => run(() => api(`/cases/${kase.id}/deadline-reminders`, { method: 'POST', body: JSON.stringify(dto) }), '期限提醒已登记')}
+                  />
+                )}
+                {(kase.reminders || []).length > 0 && (
+                  <>
+                    <h3>提醒记录</h3>
+                    <table className="table">
+                      <thead><tr><th>时间</th><th>方式</th><th>说明</th><th>距期限</th><th>及时性</th><th>提醒人</th></tr></thead>
+                      <tbody>
+                        {kase.reminders.map((r: any) => (
+                          <tr key={r.id}>
+                            <td className="muted">{fmtDateTime(r.createdAt)}</td>
+                            <td>{CHANNEL_LABELS[r.channel] || r.channel}</td>
+                            <td>{r.note || '—'}</td>
+                            <td>{r.daysLeftAtReminder === null ? '—' : r.daysLeftAtReminder < 0 ? `已逾期 ${-r.daysLeftAtReminder} 天` : `${r.daysLeftAtReminder} 天`}</td>
+                            <td><Badge text={TIMELINESS_LABELS[r.timeliness]} cls={timelinessBadge(r.timeliness)} /></td>
+                            <td className="muted">{r.remindedBy?.name || '—'}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </>
+                )}
+              </div>
             )}
 
             {/* ---------- 预约 ---------- */}
@@ -755,6 +802,46 @@ function FollowUpPanel({ onSubmit }: any) {
       <div className="row">
         <input className="input" style={{ width: 420 }} placeholder="回访结果，如：已按咨询意见办理，问题已解决" value={result} onChange={(e) => setResult(e.target.value)} />
         <button className="btn btn-sm" disabled={!result} onClick={() => { onSubmit({ result }); setResult('') }}>登记回访</button>
+      </div>
+    </div>
+  )
+}
+
+// ---------- 期限管理面板（工作人员） ----------
+function DeadlinePanel({ kase, onChecklist, onIntent, onRemind }: any) {
+  const [intent, setIntent] = useState('WILLING')
+  const [intentNote, setIntentNote] = useState('')
+  const [channel, setChannel] = useState('PHONE')
+  const [remindNote, setRemindNote] = useState('')
+  return (
+    <div>
+      <div className="row">
+        <button className="btn" onClick={onChecklist}>📋 生成标准材料清单</button>
+        <span className="muted" style={{ fontSize: 12 }}>按案件类型生成待补材料清单并通知居民准备</span>
+      </div>
+      <div className="grid-2 mt16">
+        <div>
+          <h3>居民意愿登记</h3>
+          <div className="row">
+            <select className="input" style={{ width: 190 }} value={intent} onChange={(e) => setIntent(e.target.value)}>
+              {Object.entries(INTENT_LABELS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+            </select>
+            <input className="input" style={{ flex: 1, minWidth: 160 }} placeholder="备注（如：居民要求本周内安排律师）" value={intentNote} onChange={(e) => setIntentNote(e.target.value)} />
+            <button className="btn btn-primary btn-sm" onClick={() => { onIntent({ intent, note: intentNote }); setIntentNote('') }}>登记</button>
+          </div>
+          {kase.residentIntent && <p className="muted" style={{ fontSize: 12, margin: '6px 0 0' }}>当前意愿：{INTENT_LABELS[kase.residentIntent]}{kase.residentIntentNote ? `（${kase.residentIntentNote}）` : ''}</p>}
+        </div>
+        <div>
+          <h3>期限提醒登记</h3>
+          <div className="row">
+            <select className="input" style={{ width: 130 }} value={channel} onChange={(e) => setChannel(e.target.value)}>
+              {Object.entries(CHANNEL_LABELS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+            </select>
+            <input className="input" style={{ flex: 1, minWidth: 160 }} placeholder="提醒内容（如：已电话告知仲裁时效仅剩20天）" value={remindNote} onChange={(e) => setRemindNote(e.target.value)} />
+            <button className="btn btn-primary btn-sm" onClick={() => { onRemind({ channel, note: remindNote }); setRemindNote('') }}>登记提醒</button>
+          </div>
+          <p className="muted" style={{ fontSize: 12, margin: '6px 0 0' }}>系统按提醒时距期限天数自动评估及时性（及时/临近/逾期），用于服务质量复盘。</p>
+        </div>
       </div>
     </div>
   )

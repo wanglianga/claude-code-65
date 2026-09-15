@@ -92,6 +92,10 @@ export const TASK_STATUS_LABELS: Record<string, string> = { OPEN: '待处理', I
 export const REFERRAL_STATUS_LABELS: Record<string, string> = { PENDING: '待接收', ACCEPTED: '已接收', REJECTED: '已退回', COMPLETED: '已办结' }
 export const REFERRAL_TYPE_LABELS: Record<string, string> = { JUDICIAL: '司法所转介', CROSS_STREET: '跨街道转介', OTHER_ORG: '其他单位' }
 export const APPT_STATUS_LABELS: Record<string, string> = { PENDING: '待确认', CONFIRMED: '已确认', COMPLETED: '已完成', CANCELLED: '已取消' }
+export const RISK_LABELS: Record<string, string> = { NONE: '无风险', LOW: '较低', MEDIUM: '中等', HIGH: '高风险', EXPIRED: '已逾期' }
+export const INTENT_LABELS: Record<string, string> = { WILLING: '愿意立即启动程序', NOT_YET: '暂缓考虑', DECLINED: '放弃申请' }
+export const CHANNEL_LABELS: Record<string, string> = { PHONE: '电话', VISIT: '上门', MESSAGE: '平台消息', OTHER: '其他' }
+export const TIMELINESS_LABELS: Record<string, string> = { TIMELY: '提醒及时', LATE: '临近才提醒', MISSED: '逾期才提醒' }
 
 // ---------- 展示辅助 ----------
 export function fmtDate(d?: string | null): string {
@@ -138,6 +142,16 @@ export function materialStatusBadge(s: string): string {
 export function taskStatusBadge(s: string): string {
   const map: Record<string, string> = { OPEN: 'badge-orange', IN_PROGRESS: 'badge-blue', DONE: 'badge-green', CANCELLED: 'badge-gray' }
   return map[s] || 'badge-gray'
+}
+
+export function riskBadge(r?: string | null): string {
+  const map: Record<string, string> = { LOW: 'badge-blue', MEDIUM: 'badge-orange', HIGH: 'badge-red', EXPIRED: 'badge-red' }
+  return map[r || ''] || 'badge-gray'
+}
+
+export function timelinessBadge(t: string): string {
+  const map: Record<string, string> = { TIMELY: 'badge-green', LATE: 'badge-orange', MISSED: 'badge-red' }
+  return map[t] || 'badge-gray'
 }
 
 export function specialFlags(kase: any): string[] {

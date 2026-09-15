@@ -90,6 +90,7 @@ class CreateCaseDto {
   @IsOptional() @IsBoolean() opponentSued?: boolean
   @IsOptional() @IsString() opposingParties?: string
   @IsOptional() @IsDateString() statuteOfLimitations?: string
+  @IsOptional() @IsDateString() incidentDate?: string
   @IsOptional() @IsString() deadlineNotes?: string
   @IsOptional() @IsString() street?: string
   @IsOptional() @IsArray() @ValidateNested({ each: true }) @Type(() => KeyDateDto) keyDates?: KeyDateDto[]
@@ -187,6 +188,16 @@ class FollowUpDto {
   @IsString() @IsNotEmpty() result: string
 }
 
+class ResidentIntentDto {
+  @IsIn(['WILLING', 'NOT_YET', 'DECLINED']) intent: string
+  @IsOptional() @IsString() note?: string
+}
+
+class ReminderDto {
+  @IsIn(['PHONE', 'VISIT', 'MESSAGE', 'OTHER']) channel: string
+  @IsOptional() @IsString() note?: string
+}
+
 @Controller()
 export class CasesController {
   constructor(private svc: CasesService) {}
@@ -204,6 +215,13 @@ export class CasesController {
   @Get('cases')
   findAll(@CurrentUser() user: JwtUser, @Query() q: any) {
     return this.svc.findAll(user, q)
+  }
+
+  // 注意：必须声明在 cases/:id 之前，否则会被 :id 捕获
+  @Get('cases/deadline-risks')
+  @Roles('STAFF', 'ADMIN', 'JUDICIAL')
+  deadlineRisks(@CurrentUser() user: JwtUser) {
+    return this.svc.deadlineRisks(user)
   }
 
   @Get('cases/:id')
@@ -364,5 +382,24 @@ export class CasesController {
   @Roles('STAFF', 'ADMIN', 'JUDICIAL')
   followUp(@CurrentUser() user: JwtUser, @Param('id') id: string, @Body() dto: FollowUpDto) {
     return this.svc.followUp(user, id, dto)
+  }
+
+  // ----- 期限风险管理 -----
+  @Post('cases/:id/material-checklist')
+  @Roles('STAFF', 'ADMIN')
+  generateChecklist(@CurrentUser() user: JwtUser, @Param('id') id: string) {
+    return this.svc.generateChecklist(user, id)
+  }
+
+  @Post('cases/:id/resident-intent')
+  @Roles('STAFF', 'ADMIN')
+  setResidentIntent(@CurrentUser() user: JwtUser, @Param('id') id: string, @Body() dto: ResidentIntentDto) {
+    return this.svc.setResidentIntent(user, id, dto)
+  }
+
+  @Post('cases/:id/deadline-reminders')
+  @Roles('STAFF', 'ADMIN')
+  addReminder(@CurrentUser() user: JwtUser, @Param('id') id: string, @Body() dto: ReminderDto) {
+    return this.svc.addReminder(user, id, dto)
   }
 }

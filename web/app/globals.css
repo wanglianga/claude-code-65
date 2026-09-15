@@ -185,3 +185,10 @@ textarea.input { min-height: 90px; resize: vertical; }
 .progress > div { height: 100%; background: var(--green); }
 
 .empty { color: var(--muted); text-align: center; padding: 24px 0; font-size: 13px; }
+
+/* 授权人员标签内的撤销按钮 */
+.link-btn {
+  border: none; background: none; color: var(--red); cursor: pointer;
+  font-size: 12px; line-height: 1; padding: 0 0 0 3px;
+}
+.link-btn:hover { font-weight: 700; }

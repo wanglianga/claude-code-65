@@ -60,6 +60,7 @@ export async function api(path: string, opts: RequestInit = {}): Promise<any> {
 export const ROLE_LABELS: Record<string, string> = {
   ADMIN: '平台管理员', RESIDENT: '居民', STAFF: '社区工作人员',
   LAWYER: '值班律师', JUDICIAL: '司法所', VOLUNTEER: '志愿者',
+  WOMEN_FEDERATION: '妇联', POLICE: '派出所',
 }
 export const TYPE_LABELS: Record<string, string> = {
   LABOR_DISPUTE: '劳动纠纷', MARRIAGE_FAMILY: '婚姻家事', HOUSING_RENTAL: '房屋租赁',
@@ -90,7 +91,11 @@ export const TASK_TYPE_LABELS: Record<string, string> = {
 }
 export const TASK_STATUS_LABELS: Record<string, string> = { OPEN: '待处理', IN_PROGRESS: '处理中', DONE: '已完成', CANCELLED: '已取消' }
 export const REFERRAL_STATUS_LABELS: Record<string, string> = { PENDING: '待接收', ACCEPTED: '已接收', REJECTED: '已退回', COMPLETED: '已办结' }
-export const REFERRAL_TYPE_LABELS: Record<string, string> = { JUDICIAL: '司法所转介', CROSS_STREET: '跨街道转介', OTHER_ORG: '其他单位' }
+export const REFERRAL_TYPE_LABELS: Record<string, string> = { JUDICIAL: '司法所转介', CROSS_STREET: '跨街道转介', WOMEN_FEDERATION: '妇联协同', POLICE: '派出所协同', OTHER_ORG: '其他单位' }
+export const DV_SIGNAL_LABELS: Record<string, string> = {
+  threat: '存在威胁/恐吓言辞', harm: '存在伤害/暴力描述', control: '存在控制财产/经济控制描述',
+}
+export const DV_RISK_LEVEL_LABELS: Record<string, string> = { HIGH: '高风险', MEDIUM: '中风险', LOW: '低风险' }
 export const APPT_STATUS_LABELS: Record<string, string> = { PENDING: '待确认', CONFIRMED: '已确认', COMPLETED: '已完成', CANCELLED: '已取消' }
 export const RISK_LABELS: Record<string, string> = { NONE: '无风险', LOW: '较低', MEDIUM: '中等', HIGH: '高风险', EXPIRED: '已逾期' }
 export const INTENT_LABELS: Record<string, string> = { WILLING: '愿意立即启动程序', NOT_YET: '暂缓考虑', DECLINED: '放弃申请' }
@@ -164,4 +169,20 @@ export function specialFlags(kase: any): string[] {
   if (kase.isDisabled) flags.push('残障人士')
   if (kase.opponentSued) flags.push('对方已起诉')
   return flags
+}
+
+// 家暴风险信号客户端预检（与后端 rules.ts 关键词保持一致，用于录入即时提示）
+const DV_KW = {
+  threat: ['威胁', '恐吓', '扬言', '弄死', '打死', '杀了', '杀人', '同归于尽', '报复', '不让好过', '小心点', '收拾你', '砍'],
+  harm: ['打我', '殴打', '家暴', '家庭暴力', '扇耳光', '推搡', '踢', '动手', '受伤', '伤痕', '淤青', '伤情', '刀', '棍', '掐', '烫', '施暴'],
+  control: ['控制财产', '控制工资', '工资卡', '银行卡', '没收', '不给钱', '经济控制', '控制经济', '转移财产', '霸占', '扣押', '身份证', '户口本', '锁在门外', '赶出家门', '净身出户', '不让上班', '软禁'],
+}
+
+export function detectDvClient(type?: string, description?: string) {
+  const text = description || ''
+  if (type && type !== 'MARRIAGE_FAMILY') return { threat: false, harm: false, control: false, matched: [], has: false }
+  const hit = (words: string[]) => words.filter((w) => text.includes(w))
+  const threat = hit(DV_KW.threat), harm = hit(DV_KW.harm), control = hit(DV_KW.control)
+  const matched = [...threat, ...harm, ...control]
+  return { threat: threat.length > 0, harm: harm.length > 0, control: control.length > 0, matched, has: matched.length > 0 }
 }

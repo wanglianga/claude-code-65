@@ -8,7 +8,7 @@ import {
   getUser, INTENT_LABELS, MATERIAL_STATUS_LABELS, materialStatusBadge, priorityBadge, PRIORITY_LABELS,
   REFERRAL_STATUS_LABELS, REFERRAL_TYPE_LABELS, RISK_LABELS, riskBadge, ROLE_LABELS, SessionUser, SOURCE_LABELS,
   specialFlags, statusBadge, STATUS_LABELS, TASK_STATUS_LABELS, TASK_TYPE_LABELS, taskStatusBadge,
-  TIMELINESS_LABELS, timelinessBadge, TYPE_LABELS, URGENCY_LABELS,
+  TIMELINESS_LABELS, timelinessBadge, TYPE_LABELS, URGENCY_LABELS, DV_SIGNAL_LABELS, DV_RISK_LEVEL_LABELS,
 } from '../../lib'
 
 export default function CaseDetailPage() {
@@ -63,6 +63,7 @@ export default function CaseDetailPage() {
   const role = user.role
   const isStaff = ['STAFF', 'ADMIN'].includes(role)
   const isJudicial = role === 'JUDICIAL'
+  const isUnit = ['JUDICIAL', 'WOMEN_FEDERATION', 'POLICE'].includes(role)
   const isLawyer = role === 'LAWYER'
   const isOwner = kase?.residentId === user.id
   const isAssignedLawyer = isLawyer && kase?.lawyerId === user.id
@@ -73,6 +74,7 @@ export default function CaseDetailPage() {
   const verifiedCount = materials.filter((m: any) => m.status === 'VERIFIED').length
   const completeness = materials.length ? Math.round((verifiedCount / materials.length) * 100) : 0
   const statuteDays = kase ? daysLeft(kase.statuteOfLimitations) : null
+  const referralsSafetyCount = (kase?.referrals || []).filter((r: any) => r.isSafetyReferral).length
 
   // 任务状态变更权限：任务负责人 / 对应角色（角色任务）/ 管理员
   const canUpdateTask = (t: any) =>
@@ -128,7 +130,28 @@ export default function CaseDetailPage() {
                 <div className="alert alert-blue mt8">🔒 本案为{CONF_LABELS[kase.confidentiality]}案件：申请人身份信息仅对承办人员可见，请注意保密。</div>
               )}
               {kase.ruleNotes && <div className="alert alert-blue mt8">特殊规则：{kase.ruleNotes}</div>}
+              {kase.isDomesticViolence && (
+                <div className="alert alert-red mt8">
+                  🛟 <b>家庭暴力风险案件</b>
+                  {(kase.dvSignalThreat || kase.dvSignalHarm || kase.dvSignalControl) && (
+                    <span>
+                      ：系统在咨询描述中识别出
+                      {[['dvSignalThreat', 'threat'], ['dvSignalHarm', 'harm'], ['dvSignalControl', 'control']]
+                        .filter(([f]) => kase[f as string])
+                        .map(([, k]) => DV_SIGNAL_LABELS[k as string])
+                        .join('、')}
+                      {kase.dvSignalNote ? `（${kase.dvSignalNote}）` : ''}
+                    </span>
+                  )}
+                  。律师咨询不得孤立推进，须由社区记录安全信息并转介司法所/妇联/派出所协同。
+                </div>
+              )}
             </div>
+
+            {/* ---------- 家暴风险安全处置 ---------- */}
+            {kase.isDomesticViolence && (
+              <SafetyManagement kase={kase} user={user} allUsers={allUsers} onRun={run} />
+            )}
 
             <div className="grid-2">
               {/* ---------- 案件信息 ---------- */}
@@ -138,6 +161,7 @@ export default function CaseDetailPage() {
                   <dt>咨询类型</dt><dd>{TYPE_LABELS[kase.type]}</dd>
                   <dt>来源渠道</dt><dd>{SOURCE_LABELS[kase.source]}</dd>
                   <dt>申请人</dt><dd>{kase.applicantName}{kase.applicantPhone ? `（${kase.applicantPhone}）` : ''}</dd>
+                  <dt>现住址</dt><dd>{kase.applicantAddress || '—'}</dd>
                   <dt>所属街道</dt><dd>{kase.street || '—'}</dd>
                   <dt>家庭月收入</dt><dd>{kase.familyIncome != null ? `${kase.familyIncome} 元` : '—'}</dd>
                   <dt>紧急程度</dt><dd>{URGENCY_LABELS[kase.urgency]}</dd>
@@ -370,26 +394,58 @@ export default function CaseDetailPage() {
 
             {/* ---------- 转介 ---------- */}
             <div className="card">
-              <h2>转介记录</h2>
+              <h2>转介记录{referralsSafetyCount > 0 && <span className="muted" style={{ fontSize: 13, fontWeight: 400 }}>（含 {referralsSafetyCount} 条家暴协同转介，授权人员可见联系方式与住址）</span>}</h2>
               {kase.referrals?.length === 0 ? <Empty text="暂无转介" /> : (
                 <table className="table">
-                  <thead><tr><th>类型</th><th>去向</th><th>原因</th><th>状态</th><th>操作</th></tr></thead>
+                  <thead><tr><th>类型</th><th>去向</th><th>原因</th><th>接收/授权</th><th>回访</th><th>状态</th><th>操作</th></tr></thead>
                   <tbody>
                     {kase.referrals.map((r: any) => (
                       <tr key={r.id}>
-                        <td>{REFERRAL_TYPE_LABELS[r.type] || r.type}</td>
+                        <td>
+                          {REFERRAL_TYPE_LABELS[r.type] || r.type}
+                          {r.isSafetyReferral && <div><Badge text="家暴协同" cls="badge-red" /></div>}
+                        </td>
                         <td>{r.toUnit}{r.toStreet ? `（${r.toStreet}）` : ''}</td>
                         <td className="muted">{r.reason || '—'}</td>
+                        <td style={{ fontSize: 12 }}>
+                          {r.acceptedBy
+                            ? <span>接收人：{r.acceptedBy.name}</span>
+                            : <span className="muted">待接收</span>}
+                          {(r.grants || []).length > 0 && (
+                            <div className="muted">授权：{r.grants.filter((g: any) => !g.revokedAt).map((g: any) => g.user.name).join('、') || '—'}</div>
+                          )}
+                        </td>
+                        <td style={{ fontSize: 12 }}>
+                          {(r.followUps || []).length === 0 ? <span className="muted">—</span> : r.followUps.map((f: any, i: number) => (
+                            <div key={f.id}>
+                              {f.doneAt ? '✓' : '计划'} {fmtDate(f.scheduledAt)}
+                              {f.result ? `：${f.result}` : ''}
+                            </div>
+                          ))}
+                        </td>
                         <td><Badge text={REFERRAL_STATUS_LABELS[r.status]} cls="badge-purple" /></td>
                         <td>
-                          {(isStaff || isJudicial) && r.status === 'PENDING' && (
+                          {(isStaff || isUnit) && r.status === 'PENDING' && (
                             <div className="btn-row" style={{ marginTop: 0 }}>
-                              <button className="btn btn-sm" onClick={() => run(() => api(`/referrals/${r.id}`, { method: 'PATCH', body: JSON.stringify({ status: 'ACCEPTED' }) }), '已接收转介')}>接收</button>
+                              <button className="btn btn-sm" onClick={() => run(() => api(`/referrals/${r.id}`, { method: 'PATCH', body: JSON.stringify({ status: 'ACCEPTED' }) }), '已接收，您已获授权查看联系方式与住址')}>接收</button>
                               <button className="btn btn-sm" onClick={() => run(() => api(`/referrals/${r.id}`, { method: 'PATCH', body: JSON.stringify({ status: 'REJECTED' }) }), '已退回转介')}>退回</button>
                             </div>
                           )}
-                          {(isStaff || isJudicial) && r.status === 'ACCEPTED' && (
-                            <button className="btn btn-sm" onClick={() => run(() => api(`/referrals/${r.id}`, { method: 'PATCH', body: JSON.stringify({ status: 'COMPLETED' }) }), '转介已办结')}>办结</button>
+                          {(isStaff || isUnit) && r.status === 'ACCEPTED' && (
+                            <div className="btn-row" style={{ marginTop: 0 }}>
+                              <button className="btn btn-sm" onClick={() => {
+                                const d = prompt('安排回访日期（YYYY-MM-DD），默认 7 天后', new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10))
+                                if (d) run(() => api(`/referrals/${r.id}/follow-ups`, { method: 'POST', body: JSON.stringify({ scheduledAt: new Date(d + 'T10:00').toISOString() }) }), '回访已安排')
+                              }}>安排回访</button>
+                              {isStaff && <button className="btn btn-sm" onClick={() => run(() => api(`/referrals/${r.id}`, { method: 'PATCH', body: JSON.stringify({ status: 'COMPLETED' }) }), '转介已办结')}>办结</button>}
+                            </div>
+                          )}
+                          {(isStaff || isUnit) && r.status === 'ACCEPTED' && (r.followUps || []).some((f: any) => !f.doneAt) && (
+                            <button className="btn btn-sm" onClick={() => {
+                              const pending = r.followUps.find((f: any) => !f.doneAt)
+                              const result = prompt('登记回访结果')
+                              if (result) run(() => api(`/referral-follow-ups/${pending.id}`, { method: 'PATCH', body: JSON.stringify({ result }) }), '回访结果已登记')
+                            }}>登记回访结果</button>
                           )}
                         </td>
                       </tr>
@@ -397,7 +453,7 @@ export default function CaseDetailPage() {
                   </tbody>
                 </table>
               )}
-              {(isStaff || isJudicial) && kase.status !== 'CLOSED' && (
+              {isStaff && kase.status !== 'CLOSED' && (
                 <AddReferral onSubmit={(dto) => run(() => api(`/cases/${kase.id}/referrals`, { method: 'POST', body: JSON.stringify(dto) }), '转介已发起')} />
               )}
             </div>
@@ -601,6 +657,24 @@ function LawyerPanel({ kase, userId, isAssigned, canSeePool, onTake, onConflict,
   return (
     <div className="card" style={{ borderColor: 'var(--purple)' }}>
       <h2>律师接案（接案前请核对：案件事实、关键期限、证据完整度、冲突主体、利益冲突）</h2>
+      {kase.isDomesticViolence && kase.dvCoordination && !kase.dvCoordination.lawyerCanProceed && (
+        <div className="alert alert-red">
+          🛟 <b>家暴协同尚未就绪，律师不能孤立推进：</b>
+          {!kase.dvCoordination.safetyPlanRecorded && '社区工作人员尚未记录安全联系人/临时住所/报警情况；'}
+          {kase.dvCoordination.acceptedCount === 0 && '司法所/妇联/派出所尚无一单位接收协同转介；'}
+          待社区完成安全处置并有协同单位接收后，本所方可接案。
+          {kase.dvCoordination.units.length > 0 && (
+            <div className="muted" style={{ marginTop: 4 }}>
+              协同进展：{kase.dvCoordination.units.map((u: any) => `${REFERRAL_TYPE_LABELS[u.type]}（${REFERRAL_STATUS_LABELS[u.status]}）`).join('、')}
+            </div>
+          )}
+        </div>
+      )}
+      {kase.isDomesticViolence && kase.dvCoordination?.lawyerCanProceed && (
+        <div className="alert alert-green">
+          ✓ 家暴协同已建立（安全信息已记录，{kase.dvCoordination.acceptedCount} 个协同单位已接收），可在协同框架内接案推进，不再孤立办理。
+        </div>
+      )}
       {canSeePool && (
         <div className="btn-row">
           <button className="btn btn-primary" onClick={onTake}>领取本案</button>
@@ -624,7 +698,12 @@ function LawyerPanel({ kase, userId, isAssigned, canSeePool, onTake, onConflict,
           <div className="btn-row">
             <button className="btn" onClick={() => onConflict({ hasConflict, note })}>提交冲突核查</button>
             {kase.status === 'AWAITING_LAWYER' && (
-              <button className="btn btn-primary" onClick={onAccept}>接受案件</button>
+              <button
+                className="btn btn-primary"
+                disabled={kase.isDomesticViolence && kase.dvCoordination && !kase.dvCoordination.lawyerCanProceed}
+                title={kase.isDomesticViolence && kase.dvCoordination && !kase.dvCoordination.lawyerCanProceed ? '需先完成社区安全处置并由协同单位接收' : ''}
+                onClick={onAccept}
+              >接受案件</button>
             )}
             <button className="btn btn-danger" onClick={() => {
               const reason = prompt('退案原因')
@@ -843,6 +922,236 @@ function DeadlinePanel({ kase, onChecklist, onIntent, onRemind }: any) {
           <p className="muted" style={{ fontSize: 12, margin: '6px 0 0' }}>系统按提醒时距期限天数自动评估及时性（及时/临近/逾期），用于服务质量复盘。</p>
         </div>
       </div>
+    </div>
+  )
+}
+
+// ---------- 家暴风险安全处置（安全信息 / 协同转介 / 授权 / 回访） ----------
+const SAFETY_UNITS = [
+  { type: 'JUDICIAL', label: '司法所' },
+  { type: 'WOMEN_FEDERATION', label: '妇联' },
+  { type: 'POLICE', label: '派出所' },
+]
+
+function SafetyManagement({ kase, user, allUsers, onRun }: any) {
+  const isStaff = ['STAFF', 'ADMIN'].includes(user.role)
+  const isUnit = ['JUDICIAL', 'WOMEN_FEDERATION', 'POLICE'].includes(user.role)
+  const sp = kase.safetyPlan
+  const coord = kase.dvCoordination
+  const safetyRefs = (kase.referrals || []).filter((r: any) => r.isSafetyReferral)
+
+  return (
+    <div className="card" style={{ borderColor: 'var(--red)', borderWidth: 2 }}>
+      <h2 style={{ borderLeftColor: 'var(--red)' }}>🛟 家暴风险安全处置（律师咨询不孤立推进）</h2>
+
+      {/* 协同状态总览 */}
+      <div className="row">
+        <Badge text={sp ? '安全信息已记录' : '安全信息待记录'} cls={sp ? 'badge-green' : 'badge-red'} />
+        <Badge text={`已转介 ${coord?.referralCount || 0} 个协同单位`} cls={(coord?.referralCount || 0) > 0 ? 'badge-blue' : 'badge-gray'} />
+        <Badge text={`${coord?.acceptedCount || 0} 个单位已接收`} cls={(coord?.acceptedCount || 0) > 0 ? 'badge-green' : 'badge-orange'} />
+        <Badge text={coord?.lawyerCanProceed ? '律师可在协同框架内推进' : '律师暂不可接案推进'} cls={coord?.lawyerCanProceed ? 'badge-green' : 'badge-red'} />
+      </div>
+      <div className="alert alert-blue">
+        当事人联系方式与现住址严格保密：仅工作人员、承办律师及各协同单位的<b>授权人员</b>（接收人或被单独授权者）可查看；其他人员看到的均为脱敏信息。
+      </div>
+
+      {/* 社区工作人员：记录安全联系人 / 临时住所 / 报警情况 */}
+      {isStaff && kase.status !== 'CLOSED' && (
+        <SafetyPlanForm key={sp ? sp.id : 'new'} kase={kase} onRun={onRun} />
+      )}
+
+      {/* 已记录的安全信息（只读；非授权人员后端已脱敏/裁剪） */}
+      {sp && (
+        <div className="mt8">
+          <h3>已记录的安全信息</h3>
+          <dl className="kv">
+            <dt>安全联系人</dt>
+            <dd>{sp.emergencyContactName || '—'}{sp.emergencyContactPhone ? `（${sp.emergencyContactPhone}）` : ''}{sp.emergencyContactRel ? ` · 关系：${sp.emergencyContactRel}` : ''}</dd>
+            <dt>临时住所</dt>
+            <dd>{sp.shelterArranged ? `${sp.shelterName || '已安排'} ${sp.shelterAddress || ''}` : '暂未安排'}</dd>
+            <dt>报警情况</dt>
+            <dd>
+              {sp.policeReported
+                ? <>已报警{sp.policeReportAt ? `（${fmtDate(sp.policeReportAt)}）` : ''}{sp.policeReportNo ? ` · 回执号：${sp.policeReportNo}` : ''}{sp.policeNote ? ` · ${sp.policeNote}` : ''}</>
+                : '暂未报警'}
+            </dd>
+            <dt>风险等级</dt><dd>{sp.riskLevel ? DV_RISK_LEVEL_LABELS[sp.riskLevel] : '—'}</dd>
+            <dt>处置备注</dt><dd>{sp.notes || '—'}</dd>
+          </dl>
+        </div>
+      )}
+
+      {/* 社区工作人员：发起协同转介（司法所/妇联/派出所） */}
+      {isStaff && kase.status !== 'CLOSED' && (
+        <SafetyReferralForm kase={kase} safetyRefs={safetyRefs} onRun={onRun} />
+      )}
+
+      {/* 协同转介节点 + 授权人员管理 + 回访 */}
+      <h3>协同转介节点与授权人员</h3>
+      {safetyRefs.length === 0 ? <Empty text="尚未发起协同转介" /> : (
+        <table className="table">
+          <thead><tr><th>协同单位</th><th>状态</th><th>接收人</th><th>授权可见人员</th><th>回访安排</th>{isStaff && <th>授权管理</th>}</tr></thead>
+          <tbody>
+            {safetyRefs.map((r: any) => (
+              <tr key={r.id}>
+                <td>{REFERRAL_TYPE_LABELS[r.type] || r.type}<div className="muted" style={{ fontSize: 12 }}>{r.toUnit}</div></td>
+                <td><Badge text={REFERRAL_STATUS_LABELS[r.status]} cls="badge-purple" /></td>
+                <td>{r.acceptedBy ? r.acceptedBy.name : <span className="muted">待接收</span>}</td>
+                <td style={{ fontSize: 12 }}>
+                  {(r.grants || []).filter((g: any) => !g.revokedAt).length === 0
+                    ? <span className="muted">暂无</span>
+                    : (r.grants || []).filter((g: any) => !g.revokedAt).map((g: any) => (
+                      <span key={g.id} className="chip">{g.user.name}
+                        {isStaff && <button className="link-btn" onClick={() => onRun(() => api(`/referrals/${r.id}/grants`, { method: 'POST', body: JSON.stringify({ userId: g.userId, revoke: true }) }), '已撤销授权')}>×</button>}
+                      </span>
+                    ))}
+                </td>
+                <td style={{ fontSize: 12 }}>
+                  {(r.followUps || []).length === 0 ? <span className="muted">默认接收后 7 天回访</span> :
+                    r.followUps.map((f: any) => (
+                      <div key={f.id}>{f.doneAt ? '✓ ' : '计划 '}{fmtDate(f.scheduledAt)}{f.result ? `：${f.result}` : ''}</div>
+                    ))}
+                </td>
+                {isStaff && (
+                  <td><GrantUserPicker r={r} allUsers={allUsers} onRun={onRun} /></td>
+                )}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      {isUnit && (
+        <p className="muted" style={{ fontSize: 12 }}>本单位接收后即在下方「转介记录」中办理接收/退回、安排并登记回访；接收人自动获得联系方式与住址查看授权。</p>
+      )}
+    </div>
+  )
+}
+
+function SafetyPlanForm({ kase, onRun }: any) {
+  const existing = kase.safetyPlan || {}
+  const [form, setForm] = useState<any>({
+    emergencyContactName: existing.emergencyContactName || '',
+    emergencyContactPhone: existing.emergencyContactPhone || '',
+    emergencyContactRel: existing.emergencyContactRel || '',
+    shelterName: existing.shelterName || '',
+    shelterAddress: existing.shelterAddress || '',
+    shelterArranged: !!existing.shelterArranged,
+    policeReported: !!existing.policeReported,
+    policeReportNo: existing.policeReportNo || '',
+    policeReportAt: existing.policeReportAt ? existing.policeReportAt.slice(0, 10) : '',
+    policeNote: existing.policeNote || '',
+    riskLevel: existing.riskLevel || 'HIGH',
+    notes: existing.notes || '',
+  })
+  const set = (k: string, v: any) => setForm((f: any) => ({ ...f, [k]: v }))
+  return (
+    <form className="mt8" style={{ borderTop: '1px dashed var(--border)', paddingTop: 10 }}
+      onSubmit={(e) => { e.preventDefault(); onRun(() => api(`/cases/${kase.id}/safety-plan`, { method: 'POST', body: JSON.stringify(form) }), '安全信息已记录') }}>
+      <h3>① 记录安全联系人 / 临时住所 / 报警情况</h3>
+      <div className="form-grid">
+        <div>
+          <label className="label">安全联系人姓名</label>
+          <input className="input" value={form.emergencyContactName} onChange={(e) => set('emergencyContactName', e.target.value)} placeholder="如：其姐李某某" />
+        </div>
+        <div>
+          <label className="label">安全联系人电话</label>
+          <input className="input" value={form.emergencyContactPhone} onChange={(e) => set('emergencyContactPhone', e.target.value)} placeholder="应急可联系号码" />
+        </div>
+        <div>
+          <label className="label">与申请人关系</label>
+          <input className="input" value={form.emergencyContactRel} onChange={(e) => set('emergencyContactRel', e.target.value)} placeholder="如：姐姐/邻居/社区民警" />
+        </div>
+        <div>
+          <label className="label">临时安置点/庇护场所</label>
+          <input className="input" value={form.shelterName} onChange={(e) => set('shelterName', e.target.value)} placeholder="如：区反家暴庇护中心" />
+        </div>
+        <div>
+          <label className="label">临时住所地址（授权人员可见）</label>
+          <input className="input" value={form.shelterAddress} onChange={(e) => set('shelterAddress', e.target.value)} />
+        </div>
+        <div>
+          <label className="label">风险等级</label>
+          <select className="input" value={form.riskLevel} onChange={(e) => set('riskLevel', e.target.value)}>
+            {Object.entries(DV_RISK_LEVEL_LABELS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+          </select>
+        </div>
+      </div>
+      <div className="checks mt8">
+        <label><input type="checkbox" checked={form.shelterArranged} onChange={(e) => set('shelterArranged', e.target.checked)} /> 已安排临时住所</label>
+        <label><input type="checkbox" checked={form.policeReported} onChange={(e) => set('policeReported', e.target.checked)} /> 已报警</label>
+      </div>
+      {form.policeReported && (
+        <div className="form-grid mt8">
+          <div>
+            <label className="label">报警时间</label>
+            <input className="input" type="date" value={form.policeReportAt} onChange={(e) => set('policeReportAt', e.target.value)} />
+          </div>
+          <div>
+            <label className="label">报警回执/受案编号</label>
+            <input className="input" value={form.policeReportNo} onChange={(e) => set('policeReportNo', e.target.value)} />
+          </div>
+          <div>
+            <label className="label">报警处置情况</label>
+            <input className="input" value={form.policeNote} onChange={(e) => set('policeNote', e.target.value)} placeholder="如：已出具告诫书" />
+          </div>
+        </div>
+      )}
+      <label className="label mt8">安全处置备注</label>
+      <textarea className="input" value={form.notes} onChange={(e) => set('notes', e.target.value)} placeholder="当前处境、加害人动向、安全计划等" />
+      <div className="btn-row mt8">
+        <button className="btn btn-primary btn-sm">{kase.safetyPlan ? '更新安全信息' : '保存安全信息'}</button>
+      </div>
+    </form>
+  )
+}
+
+function SafetyReferralForm({ kase, safetyRefs, onRun }: any) {
+  const [units, setUnits] = useState<string[]>(['JUDICIAL', 'WOMEN_FEDERATION', 'POLICE'])
+  const [reason, setReason] = useState('')
+  const toggle = (t: string) => setUnits((u) => (u.includes(t) ? u.filter((x) => x !== t) : [...u, t]))
+  const existingTypes = new Set(safetyRefs.map((r: any) => r.type))
+  const remaining = SAFETY_UNITS.filter((u) => !existingTypes.has(u.type))
+  return (
+    <form className="mt8" style={{ borderTop: '1px dashed var(--border)', paddingTop: 10 }}
+      onSubmit={(e) => {
+        e.preventDefault()
+        const picked = units.filter((u) => !existingTypes.has(u))
+        if (!picked.length) return
+        onRun(() => api(`/cases/${kase.id}/safety-referrals`, { method: 'POST', body: JSON.stringify({ units: picked, reason }) }), '协同转介已发起，律师将与协同单位共同推进')
+      }}>
+      <h3>② 转介司法所 / 妇联 / 派出所协同处理</h3>
+      {!kase.safetyPlan && <div className="alert alert-orange" style={{ marginTop: 0 }}>请先在上方记录安全联系人/临时住所/报警情况，再发起协同转介。</div>}
+      <div className="checks">
+        {SAFETY_UNITS.map((u) => (
+          <label key={u.type} style={existingTypes.has(u.type) ? { color: 'var(--muted)' } : undefined}>
+            <input type="checkbox" checked={units.includes(u.type)} disabled={existingTypes.has(u.type)} onChange={() => toggle(u.type)} />
+            {u.label}{existingTypes.has(u.type) ? '（已转介）' : ''}
+          </label>
+        ))}
+      </div>
+      <input className="input mt8" value={reason} onChange={(e) => setReason(e.target.value)} placeholder="转介说明（可选），如：申请人身安全保护令、请求庇护与告诫" />
+      <div className="btn-row mt8">
+        <button className="btn btn-primary btn-sm" disabled={!kase.safetyPlan || remaining.length === 0}>发起协同转介</button>
+        <span className="muted" style={{ fontSize: 12 }}>发起后案件不再仅由律师孤立推进；接收单位 7 天后自动列入回访。</span>
+      </div>
+    </form>
+  )
+}
+
+function GrantUserPicker({ r, allUsers, onRun }: any) {
+  const roleForType: Record<string, string> = { JUDICIAL: 'JUDICIAL', WOMEN_FEDERATION: 'WOMEN_FEDERATION', POLICE: 'POLICE' }
+  const role = roleForType[r.type]
+  const grantedIds = new Set((r.grants || []).filter((g: any) => !g.revokedAt).map((g: any) => g.userId))
+  const candidates = (allUsers || []).filter((u: any) => u.role === role && !grantedIds.has(u.id))
+  const [userId, setUserId] = useState('')
+  if (!role || candidates.length === 0) return <span className="muted" style={{ fontSize: 12 }}>无可追加授权人员</span>
+  return (
+    <div className="row" style={{ gap: 4 }}>
+      <select className="input" style={{ width: 150 }} value={userId} onChange={(e) => setUserId(e.target.value)}>
+        <option value="">选择本单位人员…</option>
+        {candidates.map((u: any) => <option key={u.id} value={u.id}>{u.name}</option>)}
+      </select>
+      <button className="btn btn-sm" disabled={!userId} onClick={() => { onRun(() => api(`/referrals/${r.id}/grants`, { method: 'POST', body: JSON.stringify({ userId }) }), '已授权该人员查看联系方式与住址'); setUserId('') }}>授权</button>
     </div>
   )
 }

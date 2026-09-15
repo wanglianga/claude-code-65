@@ -80,6 +80,7 @@ class CreateCaseDto {
   @IsOptional() @IsIn(['COMMUNITY_EVENT', 'HOTLINE', 'OFFLINE_PAPER', 'CROSS_STREET']) source?: string
   @IsOptional() @IsString() applicantName?: string
   @IsOptional() @IsString() applicantPhone?: string
+  @IsOptional() @IsString() applicantAddress?: string
   @IsOptional() @OptionalStrictNumber() @IsInt() @Min(0) familyIncome?: number
   @IsOptional() @IsBoolean() isDisabled?: boolean
   @IsOptional() @IsBoolean() involvesMinor?: boolean
@@ -162,13 +163,49 @@ class UpdateAppointmentDto {
 
 class ReferralDto {
   @IsString() @IsNotEmpty() toUnit: string
-  @IsOptional() @IsIn(['JUDICIAL', 'CROSS_STREET', 'OTHER_ORG']) type?: string
+  @IsOptional() @IsIn(['JUDICIAL', 'CROSS_STREET', 'WOMEN_FEDERATION', 'POLICE', 'OTHER_ORG']) type?: string
   @IsOptional() @IsString() toStreet?: string
   @IsOptional() @IsString() reason?: string
+  @IsOptional() @IsBoolean() isSafetyReferral?: boolean
 }
 
 class UpdateReferralDto {
   @IsIn(['PENDING', 'ACCEPTED', 'REJECTED', 'COMPLETED']) status: string
+}
+
+class SafetyPlanDto {
+  @IsOptional() @IsString() emergencyContactName?: string
+  @IsOptional() @IsString() emergencyContactPhone?: string
+  @IsOptional() @IsString() emergencyContactRel?: string
+  @IsOptional() @IsString() shelterName?: string
+  @IsOptional() @IsString() shelterAddress?: string
+  @IsOptional() @IsBoolean() shelterArranged?: boolean
+  @IsOptional() @IsBoolean() policeReported?: boolean
+  @IsOptional() @IsString() policeReportNo?: string
+  @IsOptional() @IsDateString() policeReportAt?: string
+  @IsOptional() @IsString() policeNote?: string
+  @IsOptional() @IsIn(['HIGH', 'MEDIUM', 'LOW']) riskLevel?: string
+  @IsOptional() @IsString() notes?: string
+}
+
+class SafetyReferralsDto {
+  @IsArray() @ArrayNotEmpty() @IsIn(['JUDICIAL', 'WOMEN_FEDERATION', 'POLICE'], { each: true })
+  units: string[]
+  @IsOptional() @IsString() reason?: string
+}
+
+class GrantAccessDto {
+  @IsString() @IsNotEmpty() userId: string
+  @IsOptional() @IsBoolean() revoke?: boolean
+}
+
+class ReferralFollowUpDto {
+  @IsDateString() scheduledAt: string
+  @IsOptional() @IsString() result?: string
+}
+
+class CompleteFollowUpDto {
+  @IsString() @IsNotEmpty() result: string
 }
 
 class CloseDto {
@@ -311,7 +348,7 @@ export class CasesController {
 
   // ----- 任务 -----
   @Post('cases/:id/tasks')
-  @Roles('STAFF', 'ADMIN', 'LAWYER', 'JUDICIAL', 'VOLUNTEER')
+  @Roles('STAFF', 'ADMIN', 'LAWYER', 'JUDICIAL', 'VOLUNTEER', 'WOMEN_FEDERATION', 'POLICE')
   addTask(@CurrentUser() user: JwtUser, @Param('id') id: string, @Body() dto: TaskDto) {
     return this.svc.addTask(user, id, dto)
   }
@@ -353,14 +390,45 @@ export class CasesController {
     return this.svc.addReferral(user, id, dto)
   }
 
-  @Patch('referrals/:id')
+  // ----- 家暴风险安全处置 -----
+  @Post('cases/:id/safety-plan')
+  @Roles('STAFF', 'ADMIN')
+  saveSafetyPlan(@CurrentUser() user: JwtUser, @Param('id') id: string, @Body() dto: SafetyPlanDto) {
+    return this.svc.saveSafetyPlan(user, id, dto)
+  }
+
+  @Post('cases/:id/safety-referrals')
+  @Roles('STAFF', 'ADMIN')
+  safetyReferrals(@CurrentUser() user: JwtUser, @Param('id') id: string, @Body() dto: SafetyReferralsDto) {
+    return this.svc.safetyReferrals(user, id, dto)
+  }
+
+  @Post('referrals/:id/grants')
   @Roles('STAFF', 'ADMIN', 'JUDICIAL')
+  grantReferralAccess(@CurrentUser() user: JwtUser, @Param('id') id: string, @Body() dto: GrantAccessDto) {
+    return this.svc.grantReferralAccess(user, id, dto)
+  }
+
+  @Post('referrals/:id/follow-ups')
+  @Roles('STAFF', 'ADMIN', 'JUDICIAL', 'WOMEN_FEDERATION', 'POLICE')
+  scheduleFollowUp(@CurrentUser() user: JwtUser, @Param('id') id: string, @Body() dto: ReferralFollowUpDto) {
+    return this.svc.scheduleReferralFollowUp(user, id, dto)
+  }
+
+  @Patch('referral-follow-ups/:id')
+  @Roles('STAFF', 'ADMIN', 'JUDICIAL', 'WOMEN_FEDERATION', 'POLICE')
+  completeFollowUp(@CurrentUser() user: JwtUser, @Param('id') id: string, @Body() dto: CompleteFollowUpDto) {
+    return this.svc.completeReferralFollowUp(user, id, dto)
+  }
+
+  @Patch('referrals/:id')
+  @Roles('STAFF', 'ADMIN', 'JUDICIAL', 'WOMEN_FEDERATION', 'POLICE')
   updateReferral(@CurrentUser() user: JwtUser, @Param('id') id: string, @Body() dto: UpdateReferralDto) {
     return this.svc.updateReferral(user, id, dto)
   }
 
   @Get('referrals')
-  @Roles('STAFF', 'ADMIN', 'JUDICIAL')
+  @Roles('STAFF', 'ADMIN', 'JUDICIAL', 'WOMEN_FEDERATION', 'POLICE')
   listReferrals(@CurrentUser() user: JwtUser) {
     return this.svc.listReferrals(user)
   }

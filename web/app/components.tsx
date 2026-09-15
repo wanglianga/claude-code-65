@@ -30,6 +30,16 @@ const NAV_BY_ROLE: Record<string, { href: string; label: string }[]> = {
     { href: '/tasks', label: '协同任务' },
     { href: '/stats', label: '统计分析' },
   ],
+  WOMEN_FEDERATION: [
+    { href: '/cases', label: '协同案件' },
+    { href: '/referrals', label: '转介办理' },
+    { href: '/tasks', label: '协同任务' },
+  ],
+  POLICE: [
+    { href: '/cases', label: '协同案件' },
+    { href: '/referrals', label: '转介办理' },
+    { href: '/tasks', label: '协同任务' },
+  ],
   VOLUNTEER: [
     { href: '/tasks', label: '我的任务' },
     { href: '/cases', label: '相关案件' },

@@ -11,6 +11,7 @@ export class StatsService {
     const [
       total, closed, byStatus, byType, byCategory, bySource, byPriority,
       dv, wage, elderly, minor, disabled, opponentSued,
+      safetyPlans, safetyReferrals, safetyAccepted, dvHandled,
       satisfactionAgg, hoursAgg, archives, materials, tasksOpen,
       reminderRows, riskRows,
     ] = await Promise.all([
@@ -27,6 +28,10 @@ export class StatsService {
       this.prisma.case.count({ where: { OR: [{ isMinorRights: true }, { involvesMinor: true }] } }),
       this.prisma.case.count({ where: { isDisabled: true } }),
       this.prisma.case.count({ where: { opponentSued: true } }),
+      this.prisma.safetyPlan.count(),
+      this.prisma.referral.count({ where: { isSafetyReferral: true } }),
+      this.prisma.referral.count({ where: { isSafetyReferral: true, status: { in: ['ACCEPTED', 'COMPLETED'] } } }),
+      this.prisma.case.count({ where: { isDomesticViolence: true, dvHandled: true } }),
       this.prisma.archive.aggregate({ _avg: { satisfaction: true }, _count: { satisfaction: true } }),
       this.prisma.archive.aggregate({ _sum: { lawyerHours: true } }),
       this.prisma.archive.findMany({ select: { closedAt: true, case: { select: { createdAt: true } } } }),
@@ -56,6 +61,8 @@ export class StatsService {
       bySource: toMap(bySource, 'source'),
       byPriority: toMap(byPriority, 'priority'),
       special: { domesticViolence: dv, wageArrearsGroup: wage, elderlySupport: elderly, minorRelated: minor, disabled, opponentSued },
+      // 家暴风险协同处置
+      dvSafety: { safetyPlans, safetyReferrals, safetyAccepted, dvHandled, pending: dv - dvHandled },
       // 期限风险与提醒及时性（服务质量复盘）
       deadlineRisks: {
         HIGH: toMap(riskRows, 'deadlineRisk').HIGH || 0,

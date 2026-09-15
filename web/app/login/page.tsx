@@ -12,6 +12,8 @@ const DEMO_ACCOUNTS = [
   ['lawyer01', 'lawyer123', '值班律师（陈明远）'],
   ['lawyer02', 'lawyer123', '值班律师（赵婉婷）'],
   ['judicial01', 'judicial123', '司法所（孙立人）'],
+  ['women01', 'women123', '妇联（周文娟）'],
+  ['police01', 'police123', '派出所（陈伟强）'],
   ['volunteer01', 'volunteer123', '志愿者（周晓燕）'],
   ['admin', 'admin123', '平台管理员'],
 ]

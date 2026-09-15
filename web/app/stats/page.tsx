@@ -79,6 +79,18 @@ export default function StatsPage() {
             </div>
 
             <div className="card">
+              <h2>家暴风险协同处置（安全信息 / 协同转介 / 授权回访）</h2>
+              <div className="stat-cards" style={{ marginBottom: 0 }}>
+                <div className="stat-card"><div className="num" style={{ color: 'var(--red)' }}>{data.special.domesticViolence}</div><div className="cap">家暴风险案件</div></div>
+                <div className="stat-card"><div className="num" style={{ color: 'var(--orange)' }}>{data.dvSafety?.pending ?? 0}</div><div className="cap">待安全处置</div></div>
+                <div className="stat-card"><div className="num" style={{ color: 'var(--green)' }}>{data.dvSafety?.dvHandled ?? 0}</div><div className="cap">已完成协同处置</div></div>
+                <div className="stat-card"><div className="num">{data.dvSafety?.safetyPlans ?? 0}</div><div className="cap">安全信息记录</div></div>
+                <div className="stat-card"><div className="num">{data.dvSafety?.safetyReferrals ?? 0}</div><div className="cap">协同转介单（司法所/妇联/派出所）</div></div>
+                <div className="stat-card"><div className="num" style={{ color: 'var(--green)' }}>{data.dvSafety?.safetyAccepted ?? 0}</div><div className="cap">单位已接收</div></div>
+              </div>
+            </div>
+
+            <div className="card">
               <h2>期限风险与提醒及时性（服务质量复盘）</h2>
               <div className="stat-cards" style={{ marginBottom: 0 }}>
                 <div className="stat-card"><div className="num" style={{ color: 'var(--red)' }}>{data.deadlineRisks?.EXPIRED ?? 0}</div><div className="cap">已逾期案件</div></div>

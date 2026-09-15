@@ -27,6 +27,8 @@ async function main() {
   const lawyer1 = await upsertUser('lawyer01', { password: pwd('lawyer123'), name: '陈明远', role: 'LAWYER', organization: '中正律师事务所', phone: '13800000011' })
   const lawyer2 = await upsertUser('lawyer02', { password: pwd('lawyer123'), name: '赵婉婷', role: 'LAWYER', organization: '弘一律师事务所', phone: '13800000012' })
   const judicial = await upsertUser('judicial01', { password: pwd('judicial123'), name: '孙立人', role: 'JUDICIAL', organization: '朝阳街道司法所', street: '朝阳街道', phone: '13800000021' })
+  const women = await upsertUser('women01', { password: pwd('women123'), name: '周文娟', role: 'WOMEN_FEDERATION', organization: '朝阳街道妇女联合会', street: '朝阳街道', phone: '13800000041' })
+  const police = await upsertUser('police01', { password: pwd('police123'), name: '陈伟强', role: 'POLICE', organization: '朝阳路派出所', street: '朝阳街道', phone: '13800000051' })
   const volunteer = await upsertUser('volunteer01', { password: pwd('volunteer123'), name: '周晓燕', role: 'VOLUNTEER', organization: '朝阳街道志愿服务队', street: '朝阳街道', phone: '13800000031' })
   const resident1 = await upsertUser('resident01', { password: pwd('resident123'), name: '张大山', role: 'RESIDENT', phone: '13911110001', street: '朝阳街道' })
   const resident2 = await upsertUser('resident02', { password: pwd('resident123'), name: '刘桂芳', role: 'RESIDENT', phone: '13911110002', street: '朝阳街道' })
@@ -112,9 +114,15 @@ async function main() {
         category: 'LEGAL_AID',
         applicantName: '刘桂芳',
         applicantPhone: '13911110002',
+        applicantAddress: '朝阳街道和平里小区',
         residentId: resident2.id,
         familyIncome: 2600,
         isDomesticViolence: true,
+        dvSignalThreat: true,
+        dvSignalHarm: true,
+        dvSignalControl: false,
+        dvSignalNote: '打、威胁、赶出家门',
+        dvHandled: true,
         involvesMinor: true,
         opposingParties: '配偶王某',
         street: '朝阳街道',
@@ -127,7 +135,7 @@ async function main() {
       },
     })
     const order = await prisma.serviceOrder.create({ data: { orderNo: 'FW-LA20260905-0002', caseId: kase.id, status: 'IN_PROGRESS' } })
-    for (const [uid, duty] of [[resident2.id, '申请人'], [staff.id, '初审与协同'], [judicial.id, '协同单位（妇联/公安联动）']]) {
+    for (const [uid, duty] of [[resident2.id, '申请人'], [staff.id, '初审与协同'], [judicial.id, '协同单位（司法所）'], [women.id, '协同单位（妇联）'], [police.id, '协同单位（派出所）']]) {
       await prisma.serviceOrderParticipant.create({ data: { serviceOrderId: order.id, userId: uid, duty } })
     }
     await prisma.material.createMany({ data: [
@@ -135,12 +143,62 @@ async function main() {
       { caseId: kase.id, name: '医院诊断证明', kind: '鉴定', status: 'RECEIVED', uploadedById: resident2.id },
     ] })
     await prisma.task.createMany({ data: [
+      { caseId: kase.id, type: 'COORDINATION', title: '记录家暴安全信息（安全联系人/临时住所/报警情况）并转介司法所、妇联或派出所协同', assigneeRole: 'STAFF', assigneeId: staff.id, status: 'DONE', createdById: staff.id, completedAt: new Date(now - 2 * day), completedById: staff.id },
       { caseId: kase.id, type: 'COORDINATION', title: '联动妇联/公安/司法所建立安全保护协作', assigneeRole: 'JUDICIAL', assigneeId: judicial.id, status: 'IN_PROGRESS', createdById: staff.id, dueDate: new Date(now + 1 * day) },
       { caseId: kase.id, type: 'COORDINATION', title: '通知监护人参与并联动未成年人保护中心', assigneeRole: 'STAFF', assigneeId: staff.id, status: 'OPEN', createdById: staff.id, dueDate: new Date(now + 2 * day) },
     ] })
+
+    // 家暴安全处置信息（安全联系人 / 临时住所 / 报警情况）
+    await prisma.safetyPlan.create({ data: {
+      caseId: kase.id,
+      recordedById: staff.id,
+      emergencyContactName: '刘桂兰（姐姐）',
+      emergencyContactPhone: '13922220009',
+      emergencyContactRel: '姐姐',
+      shelterName: '区反家暴庇护中心',
+      shelterAddress: '区妇女儿童活动中心临时庇护间',
+      shelterArranged: true,
+      policeReported: true,
+      policeReportNo: 'J0902-3358',
+      policeReportAt: new Date(now - 4 * day),
+      policeNote: '派出所已出具家庭暴力告诫书',
+      riskLevel: 'HIGH',
+      notes: '加害人有持续施暴与威胁言辞，申请人暂避庇护中心，子女随行，注意保护现住址。',
+    } })
+
+    // 协同转介：司法所（已接收+授权）、妇联（已接收+授权）、派出所（待接收），均保留回访节点
+    const refJudicial = await prisma.referral.create({ data: {
+      caseId: kase.id, type: 'JUDICIAL', fromStreet: '朝阳街道', toUnit: '朝阳街道司法所',
+      isSafetyReferral: true, reason: '家暴风险案件，协同推进人身安全保护令申请', status: 'ACCEPTED',
+      createdById: staff.id, handledAt: new Date(now - 2 * day), acceptedById: judicial.id,
+    } })
+    const refWomen = await prisma.referral.create({ data: {
+      caseId: kase.id, type: 'WOMEN_FEDERATION', fromStreet: '朝阳街道', toUnit: '朝阳街道妇女联合会',
+      isSafetyReferral: true, reason: '家暴风险案件，妇联提供庇护、心理疏导与维权支持', status: 'ACCEPTED',
+      createdById: staff.id, handledAt: new Date(now - 2 * day), acceptedById: women.id,
+    } })
+    await prisma.referral.create({ data: {
+      caseId: kase.id, type: 'POLICE', fromStreet: '朝阳街道', toUnit: '朝阳路派出所',
+      isSafetyReferral: true, reason: '家暴风险案件，请持续关注告诫书执行与人身安全', status: 'PENDING',
+      createdById: staff.id,
+    } })
+    await prisma.referralAuthorization.createMany({ data: [
+      { referralId: refJudicial.id, userId: judicial.id, grantedById: staff.id },
+      { referralId: refWomen.id, userId: women.id, grantedById: staff.id },
+    ] })
+    await prisma.referralFollowUp.createMany({ data: [
+      { referralId: refJudicial.id, scheduledAt: new Date(now + 5 * day) },
+      { referralId: refWomen.id, scheduledAt: new Date(now + 3 * day), result: '已电话回访，申请人情绪稳定，继续在庇护中心暂住', doneAt: new Date(now - 1 * day), doneById: women.id },
+    ] })
+
     await prisma.caseEvent.createMany({ data: [
       { caseId: kase.id, actorId: staff.id, action: '热线转入登记', detail: '12348热线转入，工作人员代录' },
+      { caseId: kase.id, actorId: null, action: '家暴风险信号识别', detail: '咨询描述中检出威胁、伤害相关表述，按家暴案件严格保密处理' },
       { caseId: kase.id, actorId: staff.id, action: '资格初审', detail: '分流为：法律援助；严格保密' },
+      { caseId: kase.id, actorId: staff.id, action: '记录家暴安全信息', detail: '安全联系人：刘桂兰；临时住所：已安排；报警情况：已报警（告诫书）' },
+      { caseId: kase.id, actorId: staff.id, action: '发起家暴协同转介', detail: '转介至 司法所、妇联、派出所 协同处理；律师咨询不孤立推进' },
+      { caseId: kase.id, actorId: judicial.id, action: '转介处理', detail: '朝阳街道司法所：ACCEPTED（接收人已获授权查看联系方式与住址）' },
+      { caseId: kase.id, actorId: women.id, action: '转介处理', detail: '朝阳街道妇女联合会：ACCEPTED（接收人已获授权查看联系方式与住址）' },
     ] })
     return kase
   })
@@ -364,6 +422,49 @@ async function main() {
     await prisma.caseEvent.createMany({ data: [
       { caseId: kase.id, actorId: staff.id, action: '热线转入登记' },
       { caseId: kase.id, actorId: staff.id, action: '期限提醒（电话）', detail: '联系居民告知仲裁时效已过；距期限 -33 天（逾期才提醒）' },
+    ] })
+    return kase
+  })
+
+  // 9) 婚姻家事：描述中出现威胁/控制财产/赶出家门，平台自动识别家暴风险，待社区安全处置（律师不得孤立推进）
+  await ensureCase('LA20260914-0009', async () => {
+    const kase = await prisma.case.create({
+      data: {
+        caseNo: 'LA20260914-0009',
+        title: '配偶威胁并控制工资卡、赶出家门，咨询离婚与人身保护',
+        type: 'MARRIAGE_FAMILY',
+        description: '申请人电话求助：配偶长期威胁要弄死她，上个月动手打了她，还把工资卡和身份证没收、控制财产，昨晚将其锁在门外赶出家门。申请人现暂住同事家，不敢回家取衣物，担心对方报复。',
+        source: 'HOTLINE',
+        status: 'SUBMITTED',
+        urgency: 'URGENT',
+        priority: 'URGENT',
+        confidentiality: 'STRICT',
+        category: null,
+        applicantName: '周敏（化名）',
+        applicantPhone: '13900000077',
+        applicantAddress: '朝阳街道建设路段（详细地址待工作人员核实后录入）',
+        familyIncome: 2100,
+        isDomesticViolence: true,
+        dvSignalThreat: true,
+        dvSignalHarm: true,
+        dvSignalControl: true,
+        dvSignalNote: '威胁、弄死、动手、工资卡、身份证、控制财产、锁在门外、赶出家门、报复',
+        dvHandled: false,
+        opposingParties: '配偶张某',
+        street: '朝阳街道',
+        ruleNotes: '家庭暴力风险：最高优先级 + 严格保密（对未承办人员隐藏申请人身份）',
+      },
+    })
+    await prisma.task.create({ data: {
+      caseId: kase.id, type: 'COORDINATION',
+      title: '记录家暴安全信息（安全联系人/临时住所/报警情况）并转介司法所、妇联或派出所协同',
+      description: '咨询描述中出现威胁/恐吓、伤害/暴力、控制财产/经济控制描述，律师咨询不得孤立推进，请先完成安全处置',
+      assigneeRole: 'STAFF', createdById: staff.id, dueDate: new Date(now + 1 * day),
+    } })
+    await prisma.caseEvent.createMany({ data: [
+      { caseId: kase.id, actorId: staff.id, action: '热线转入登记', detail: '12348热线转入，工作人员代录' },
+      { caseId: kase.id, actorId: null, action: '家暴风险信号识别', detail: '婚姻家事咨询描述中检出威胁/恐吓、伤害/暴力、控制财产/经济控制相关表述，已按家暴案件严格保密并提示社区工作人员记录安全信息、发起协同转介' },
+      { caseId: kase.id, actorId: null, action: '命中特殊规则', detail: '家庭暴力风险：最高优先级 + 严格保密（对未承办人员隐藏申请人身份）' },
     ] })
     return kase
   })

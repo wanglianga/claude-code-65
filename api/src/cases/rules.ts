@@ -187,6 +187,13 @@ export function buildAutoTasks(c: RuleInput): AutoTask[] {
   if (c.isDomesticViolence) {
     tasks.push({
       type: 'COORDINATION',
+      title: '记录家暴安全信息（安全联系人/临时住所/报警情况）并转介司法所、妇联或派出所协同',
+      assigneeRole: 'STAFF',
+      description: '家暴风险案件，律师咨询不得孤立推进，先完成安全信息记录与协同转介',
+      dueDays: 1,
+    })
+    tasks.push({
+      type: 'COORDINATION',
       title: '联动妇联/公安/司法所建立安全保护协作',
       assigneeRole: 'JUDICIAL',
       description: '家暴风险案件，需多单位协同保护申请人人身安全，注意保密',
@@ -240,4 +247,58 @@ export function maskPhone(phone?: string | null): string | null {
   if (!phone) return phone ?? null
   if (phone.length < 7) return '***'
   return phone.slice(0, 3) + '****' + phone.slice(-4)
+}
+
+export function maskAddress(addr?: string | null): string | null {
+  if (!addr) return addr ?? null
+  // 隐藏详细住址（门牌号等），仅保留粗粒度位置
+  const cut = addr.search(/[0-9０-９]+(?:号|栋|幢|楼|室|单元)/)
+  if (cut > 0) return addr.slice(0, cut).trim() + '（详细地址已隐藏）'
+  return addr.length > 12 ? addr.slice(0, 12) + '…（详细地址已隐藏）' : '（详细地址已隐藏）'
+}
+
+// ---------- 家暴风险信号识别 ----------
+// 婚姻咨询中出现「威胁、伤害或控制财产」描述时自动识别，提示社区工作人员介入。
+export const DV_KEYWORDS = {
+  // 威胁 / 恐吓
+  threat: ['威胁', '恐吓', '扬言', '弄死', '打死', '杀了', '杀人', '同归于尽', '报复', '不让好过', '小心点', '收拾你', '砍'],
+  // 伤害 / 暴力
+  harm: ['打我', '殴打', '家暴', '家庭暴力', '扇耳光', '推搡', '踢', '动手', '受伤', '伤痕', '淤青', '伤情', '刀', '棍', '掐', '烫', '施暴'],
+  // 控制财产 / 经济控制
+  control: [
+    '控制财产', '控制工资', '工资卡', '银行卡', '没收', '不给钱', '经济控制', '控制经济',
+    '转移财产', '霸占', '扣押', '身份证', '户口本', '锁在门外', '赶出家门', '净身出户', '不让上班', '软禁',
+  ],
+}
+
+export interface DvSignal {
+  threat: boolean
+  harm: boolean
+  control: boolean
+  matched: string[]
+  has: boolean
+}
+
+export function detectDvSignals(type?: string | null, description?: string | null): DvSignal {
+  const text = description || ''
+  // 仅对婚姻家事咨询做关键词识别
+  const isMarriage = !type || type === 'MARRIAGE_FAMILY'
+  const hit = (words: string[]) => (isMarriage ? words.filter((w) => text.includes(w)) : [])
+  const threatWords = hit(DV_KEYWORDS.threat)
+  const harmWords = hit(DV_KEYWORDS.harm)
+  const controlWords = hit(DV_KEYWORDS.control)
+  const matched = [...threatWords, ...harmWords, ...controlWords]
+  return {
+    threat: threatWords.length > 0,
+    harm: harmWords.length > 0,
+    control: controlWords.length > 0,
+    matched,
+    has: matched.length > 0,
+  }
+}
+
+export const DV_SIGNAL_LABELS: Record<string, string> = {
+  threat: '存在威胁/恐吓言辞',
+  harm: '存在伤害/暴力描述',
+  control: '存在控制财产/经济控制描述',
 }

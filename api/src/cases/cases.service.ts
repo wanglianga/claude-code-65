@@ -10,10 +10,29 @@ import {
   assessDeadlineRisk,
   buildAutoTasks,
   computeSpecialRules,
+  detectDvSignals,
+  maskAddress,
   maskName,
   maskPhone,
   MATERIAL_CHECKLISTS,
 } from './rules'
+
+// 协同单位角色 → 转介类型
+const UNIT_ROLE_TO_REFERRAL: Record<string, string> = {
+  JUDICIAL: 'JUDICIAL',
+  WOMEN_FEDERATION: 'WOMEN_FEDERATION',
+  POLICE: 'POLICE',
+}
+
+// 家暴协同转介类型 → 默认接收单位名称
+export const SAFETY_UNIT_LABELS: Record<string, string> = {
+  JUDICIAL: '司法所',
+  WOMEN_FEDERATION: '妇联',
+  POLICE: '派出所',
+}
+
+// 转介接收后默认回访间隔（天）
+const DEFAULT_FOLLOW_UP_DAYS = 7
 
 // 严格解析工时等必填数值：空串、纯空格、null、undefined、布尔、非有限数、负数一律无效
 function parseStrictHours(v: any): number | null {
@@ -45,10 +64,19 @@ const CASE_INCLUDE = {  resident: { select: { id: true, name: true, phone: true 
     orderBy: { createdAt: 'asc' as const },
   },
   appointments: { include: { lawyer: { select: { id: true, name: true } } }, orderBy: { scheduledAt: 'asc' as const } },
-  referrals: { include: { createdBy: { select: { id: true, name: true } } }, orderBy: { createdAt: 'asc' as const } },
+  referrals: {
+    include: {
+      createdBy: { select: { id: true, name: true } },
+      acceptedBy: { select: { id: true, name: true, role: true, organization: true } },
+      grants: { include: { user: { select: { id: true, name: true, role: true, organization: true } } } },
+      followUps: { orderBy: { scheduledAt: 'asc' as const } },
+    },
+    orderBy: { createdAt: 'asc' as const },
+  },
   conflictChecks: { include: { lawyer: { select: { id: true, name: true } } }, orderBy: { checkedAt: 'desc' as const } },
   events: { include: { actor: { select: { id: true, name: true, role: true } } }, orderBy: { createdAt: 'asc' as const } },
   archive: true,
+  safetyPlan: true,
   serviceOrder: {
     include: { participants: { include: { user: { select: { id: true, name: true, role: true, organization: true } } } } },
   },
@@ -98,9 +126,19 @@ export class CasesService {
   }
 
   private assertCanView(kase: any, user: JwtUser) {
-    if (['ADMIN', 'STAFF', 'JUDICIAL'].includes(user.role)) return
+    if (['ADMIN', 'STAFF'].includes(user.role)) return
     if (user.role === 'RESIDENT') {
       if (kase.residentId !== user.sub) throw new ForbiddenException('只能查看自己的案件')
+      return
+    }
+    if (['JUDICIAL', 'WOMEN_FEDERATION', 'POLICE'].includes(user.role)) {
+      // 司法所保留跨案查看；妇联/派出所仅能查看已转介给本单位的案件
+      if (user.role === 'JUDICIAL') return
+      const wantType = UNIT_ROLE_TO_REFERRAL[user.role]
+      const referred = (kase.referrals || []).some(
+        (r: any) => r.type === wantType && ['PENDING', 'ACCEPTED', 'COMPLETED'].includes(r.status),
+      )
+      if (!referred) throw new ForbiddenException('该案件未转介给本单位，无权查看')
       return
     }
     if (user.role === 'LAWYER') {
@@ -119,18 +157,63 @@ export class CasesService {
     throw new ForbiddenException('无权查看该案件')
   }
 
+  // 该查看者是否为家暴案件协同单位的「授权人员」（接收人或被单独授权者）
+  private isAuthorizedUnitUser(kase: any, user: JwtUser): boolean {
+    if (!kase.isDomesticViolence) return false
+    const wantType = UNIT_ROLE_TO_REFERRAL[user.role]
+    if (!wantType) return false
+    return (kase.referrals || []).some(
+      (r: any) =>
+        r.isSafetyReferral &&
+        r.type === wantType &&
+        (r.acceptedById === user.sub ||
+          (r.grants || []).some((g) => g.userId === user.sub && !g.revokedAt)),
+    )
+  }
+
+  // 是否可查看申请人真实身份/联系方式/住址
+  private canSeeIdentity(kase: any, user: JwtUser): boolean {
+    if (['ADMIN', 'STAFF'].includes(user.role)) return true
+    if (kase.residentId === user.sub) return true
+    if (user.role === 'LAWYER' && kase.lawyerId === user.sub) return true
+    if (this.isAuthorizedUnitUser(kase, user)) return true
+    // 司法所对非家暴保密案件保留可见（既有规则）；家暴案件须为授权人员（上方已判定）
+    if (user.role === 'JUDICIAL' && !kase.isDomesticViolence) return true
+    return false
+  }
+
   private maskIfNeeded(kase: any, user: JwtUser) {
     if (!kase || kase.confidentiality === 'NORMAL') return kase
-    if (['ADMIN', 'STAFF', 'JUDICIAL'].includes(user.role)) return kase
-    if (kase.residentId === user.sub) return kase
-    if (user.role === 'LAWYER' && kase.lawyerId === user.sub) return kase
-    // 未承办人员：隐藏申请人身份
+    if (this.canSeeIdentity(kase, user)) return kase
+    // 未授权人员：隐藏申请人身份、联系方式与住址
     kase.applicantName = maskName(kase.applicantName)
     kase.applicantPhone = maskPhone(kase.applicantPhone)
+    kase.applicantAddress = maskAddress(kase.applicantAddress)
     if (kase.resident) {
       kase.resident.name = maskName(kase.resident.name)
       kase.resident.phone = maskPhone(kase.resident.phone)
     }
+    return kase
+  }
+
+  // 安全处置信息含临时住所地址、紧急联系人等敏感内容，按角色/授权裁剪
+  private filterSafetyPlan(kase: any, user: JwtUser) {
+    if (!kase.safetyPlan) return kase
+    const full =
+      ['ADMIN', 'STAFF'].includes(user.role) ||
+      kase.residentId === user.sub ||
+      this.isAuthorizedUnitUser(kase, user)
+    if (full) return kase
+    const sp = { ...kase.safetyPlan }
+    // 承办律师可见处置是否完成与风险等级，但不展示庇护地址、紧急联系人电话
+    if (user.role === 'LAWYER' && kase.lawyerId === user.sub) {
+      sp.shelterAddress = maskAddress(sp.shelterAddress)
+      sp.emergencyContactPhone = maskPhone(sp.emergencyContactPhone)
+    } else {
+      kase.safetyPlan = null
+      return kase
+    }
+    kase.safetyPlan = sp
     return kase
   }
 
@@ -141,6 +224,11 @@ export class CasesService {
     if (user.role !== 'RESIDENT' && !isStaffIntake) throw new ForbiddenException('当前角色不能提交咨询')
 
     const rules = computeSpecialRules(dto)
+    // 家暴风险信号自动识别：婚姻家事咨询描述中出现威胁/伤害/控制财产关键词
+    const signal = detectDvSignals(dto.type, dto.description)
+    const isDv = !!dto.isDomesticViolence || signal.has
+    const dvRules = isDv && !dto.isDomesticViolence ? computeSpecialRules({ ...dto, isDomesticViolence: true }) : rules
+    const finalRules = isDv && !dto.isDomesticViolence ? dvRules : rules
     const caseNo = await this.genCaseNo()
     const dbUser = isStaffIntake ? null : await this.prisma.user.findUnique({ where: { id: user.sub } })
     const kase = await this.prisma.case.create({
@@ -151,17 +239,22 @@ export class CasesService {
         description: dto.description,
         source,
         urgency: dto.urgency || 'NORMAL',
-        priority: rules.priority as any,
-        confidentiality: rules.confidentiality as any,
-        ruleNotes: rules.reasons.join('；') || null,
+        priority: finalRules.priority as any,
+        confidentiality: finalRules.confidentiality as any,
+        ruleNotes: finalRules.reasons.join('；') || null,
         applicantName: isStaffIntake ? dto.applicantName : user.name,
         applicantPhone: isStaffIntake ? dto.applicantPhone || null : dbUser?.phone || null,
+        applicantAddress: dto.applicantAddress || null,
         residentId: isStaffIntake ? null : user.sub,
         familyIncome: dto.familyIncome ?? null,
         isDisabled: !!dto.isDisabled,
         involvesMinor: !!dto.involvesMinor,
         isWageArrearsGroup: !!dto.isWageArrearsGroup,
-        isDomesticViolence: !!dto.isDomesticViolence,
+        isDomesticViolence: isDv,
+        dvSignalThreat: signal.threat,
+        dvSignalHarm: signal.harm,
+        dvSignalControl: signal.control,
+        dvSignalNote: signal.has ? signal.matched.join('、') : null,
         isElderlySupport: !!dto.isElderlySupport,
         isMinorRights: !!dto.isMinorRights,
         opponentSued: !!dto.opponentSued,
@@ -180,8 +273,33 @@ export class CasesService {
       OFFLINE_PAPER: '线下纸质材料补录', CROSS_STREET: '跨街道转入登记',
     }
     await this.event(kase.id, user.sub, sourceLabel[source] || '提交咨询', isStaffIntake ? `工作人员代录（申请人：${dto.applicantName}）` : undefined)
-    if (rules.reasons.length) {
-      await this.event(kase.id, null, '命中特殊规则', rules.reasons.join('；'))
+    if (finalRules.reasons.length) {
+      await this.event(kase.id, null, '命中特殊规则', finalRules.reasons.join('；'))
+    }
+    // 描述中识别出家暴风险信号：提示并生成社区工作人员安全处置待办
+    if (signal.has) {
+      const labels = [
+        signal.threat && '威胁/恐吓',
+        signal.harm && '伤害/暴力',
+        signal.control && '控制财产/经济控制',
+      ].filter(Boolean).join('、')
+      await this.event(
+        kase.id,
+        null,
+        '家暴风险信号识别',
+        `婚姻家事咨询描述中检出${labels}相关表述（${signal.matched.slice(0, 6).join('、')}），已按家暴案件严格保密并提示社区工作人员记录安全信息、发起协同转介`,
+      )
+      await this.prisma.task.create({
+        data: {
+          caseId: kase.id,
+          type: 'COORDINATION',
+          title: '记录家暴安全信息（安全联系人/临时住所/报警情况）并转介司法所、妇联或派出所协同',
+          description: `咨询描述中出现${labels}描述，律师咨询不得孤立推进，请先完成安全处置`,
+          assigneeRole: 'STAFF',
+          createdById: user.sub,
+          dueDate: new Date(Date.now() + 1 * 86400000),
+        },
+      })
     }
     const risk = await this.refreshDeadlineRisk(kase.id)
     if (risk && ['HIGH', 'EXPIRED'].includes(risk.level)) {
@@ -220,12 +338,17 @@ export class CasesService {
         { tasks: { some: { OR: [{ assigneeId: user.sub }, { assigneeRole: 'VOLUNTEER' }] } } },
         { serviceOrder: { participants: { some: { userId: user.sub } } } },
       ]
+    } else if (user.role === 'WOMEN_FEDERATION' || user.role === 'POLICE') {
+      // 妇联/派出所仅能看到转介给本单位的案件（司法所保留跨案查看）
+      const wantType = UNIT_ROLE_TO_REFERRAL[user.role]
+      where.referrals = { some: { type: wantType, status: { in: ['PENDING', 'ACCEPTED', 'COMPLETED'] } } }
     }
     const list = await this.prisma.case.findMany({
       where,
       include: {
         resident: { select: { id: true, name: true } },
         lawyer: { select: { id: true, name: true } },
+        referrals: { select: { type: true, status: true, isSafetyReferral: true, acceptedById: true, grants: { select: { userId: true, revokedAt: true } } } },
         _count: { select: { materials: true, tasks: true } },
       },
       orderBy: [{ priority: 'desc' }, { createdAt: 'desc' }],
@@ -240,7 +363,41 @@ export class CasesService {
     this.assertCanView(kase, user)
     // 附带实时期限风险评估（随时间推移动态变化）
     ;(kase as any).riskInfo = assessDeadlineRisk(kase)
-    return this.maskIfNeeded(kase, user)
+    // 家暴案件律师接案前置协同状态（律师咨询不得孤立推进）
+    ;(kase as any).dvCoordination = this.dvCoordinationState(kase)
+    let out = this.maskIfNeeded(kase, user)
+    out = this.filterSafetyPlan(out, user)
+    return out
+  }
+
+  // 家暴案件协同状态：安全信息是否记录、是否已转介司法所/妇联/派出所、是否可由律师继续推进
+  private dvCoordinationState(kase: any) {
+    if (!kase.isDomesticViolence) return null
+    const safetyTypes = ['JUDICIAL', 'WOMEN_FEDERATION', 'POLICE']
+    const referrals = (kase.referrals || []).filter((r: any) => r.isSafetyReferral && safetyTypes.includes(r.type))
+    const accepted = referrals.filter((r: any) => ['ACCEPTED', 'COMPLETED'].includes(r.status))
+    return {
+      dvHandled: !!kase.dvHandled,
+      safetyPlanRecorded: !!kase.safetyPlan,
+      referralCount: referrals.length,
+      acceptedCount: accepted.length,
+      units: referrals.map((r: any) => ({
+        type: r.type,
+        toUnit: r.toUnit,
+        status: r.status,
+        acceptedById: r.acceptedById,
+      })),
+      // 律师可继续推进的条件：社区已完成安全处置，且至少一个协同单位已接收
+      lawyerCanProceed: !!kase.dvHandled && accepted.length > 0,
+    }
+  }
+
+  // 协同单位只能办理本单位转介；司法所/工作人员/管理员不受限
+  private assertUnitOwnsReferral(ref: any, user: JwtUser) {
+    if (['ADMIN', 'STAFF', 'JUDICIAL'].includes(user.role)) return
+    const wantType = UNIT_ROLE_TO_REFERRAL[user.role]
+    if (wantType && ref.type === wantType) return
+    throw new ForbiddenException('该转介不属于本单位，无权办理')
   }
 
   // ---------- 资格初审 / 分流 ----------
@@ -282,8 +439,10 @@ export class CasesService {
     await addParticipant(kase.residentId, '申请人')
     await addParticipant(user.sub, '初审与协同')
 
-    // 特殊规则自动任务
+    // 特殊规则自动任务（避免与提交时已生成的同名任务重复）
+    const existingTitles = new Set((await this.prisma.task.findMany({ where: { caseId: id }, select: { title: true } })).map((t) => t.title))
     for (const t of buildAutoTasks(kase)) {
+      if (existingTitles.has(t.title)) continue
       await this.prisma.task.create({
         data: {
           caseId: id,
@@ -374,8 +533,18 @@ export class CasesService {
     if (!['AWAITING_LAWYER', 'CLASSIFIED'].includes(kase.status)) throw new BadRequestException('当前状态不可接案')
     const hasCheck = await this.prisma.conflictCheck.findFirst({ where: { caseId: id, lawyerId: user.sub } })
     if (!hasCheck) throw new BadRequestException('请先完成利益冲突核查再接案')
+    // 家暴案件：律师咨询不得孤立推进，须由社区完成安全处置并已有协同单位接收
+    if (kase.isDomesticViolence) {
+      const coord = this.dvCoordinationState(kase)
+      if (!coord!.dvHandled) {
+        throw new BadRequestException('该案存在家庭暴力风险：需先由社区工作人员记录安全联系人/临时住所/报警情况并发起协同转介，律师不得孤立接案')
+      }
+      if (coord!.acceptedCount === 0) {
+        throw new BadRequestException('家暴协同转介（司法所/妇联/派出所）尚无单位接收，律师暂不可接案推进')
+      }
+    }
     await this.prisma.case.update({ where: { id }, data: { status: 'IN_SERVICE' } })
-    await this.event(id, user.sub, '接受案件', '进入服务流程')
+    await this.event(id, user.sub, '接受案件', kase.isDomesticViolence ? '家暴协同已建立，进入服务流程（律师与协同单位共同推进）' : '进入服务流程')
     return this.findOne(user, id)
   }
 
@@ -454,7 +623,8 @@ export class CasesService {
 
   // ---------- 任务 ----------
   async addTask(user: JwtUser, id: string, dto: any) {
-    await this.getCaseOr404(id)
+    const kase = await this.getCaseOr404(id)
+    this.assertCanView(kase, user)
     const task = await this.prisma.task.create({
       data: {
         caseId: id,
@@ -560,6 +730,7 @@ export class CasesService {
         toStreet: dto.toStreet || null,
         toUnit: dto.toUnit,
         reason: dto.reason || null,
+        isSafetyReferral: !!dto.isSafetyReferral && kase.isDomesticViolence,
         createdById: user.sub,
       },
     })
@@ -568,29 +739,235 @@ export class CasesService {
     return this.findOne(user, id)
   }
 
+  // ---------- 家暴安全处置 ----------
+  // 记录安全联系人、临时住所、报警情况（社区工作人员）
+  async saveSafetyPlan(user: JwtUser, id: string, dto: any) {
+    const kase = await this.getCaseOr404(id)
+    if (!kase.isDomesticViolence) throw new BadRequestException('仅家庭暴力风险案件需要记录安全处置信息')
+    const policeReported = !!dto.policeReported
+    const data = {
+      emergencyContactName: dto.emergencyContactName || null,
+      emergencyContactPhone: dto.emergencyContactPhone || null,
+      emergencyContactRel: dto.emergencyContactRel || null,
+      shelterName: dto.shelterName || null,
+      shelterAddress: dto.shelterAddress || null,
+      shelterArranged: !!dto.shelterArranged,
+      policeReported,
+      policeReportNo: policeReported ? dto.policeReportNo || null : null,
+      policeReportAt: policeReported && dto.policeReportAt ? new Date(dto.policeReportAt) : null,
+      policeNote: dto.policeNote || null,
+      riskLevel: dto.riskLevel || null,
+      notes: dto.notes || null,
+      recordedById: user.sub,
+    }
+    await this.prisma.safetyPlan.upsert({ where: { caseId: id }, update: data, create: { caseId: id, ...data } })
+    await this.event(
+      id,
+      user.sub,
+      '记录家暴安全信息',
+      `安全联系人${data.emergencyContactName ? '：' + data.emergencyContactName : ''}；临时住所：${data.shelterArranged ? '已安排' : '暂未安排'}；报警情况：${policeReported ? '已报警' : '未报警'}`,
+    )
+    // 完成安全处置待办
+    await this.markSafetyTaskDone(id, user.sub)
+    return this.findOne(user, id)
+  }
+
+  private async markSafetyTaskDone(caseId: string, userId: string) {
+    const tasks = await this.prisma.task.findMany({
+      where: { caseId, type: 'COORDINATION', status: { in: ['OPEN', 'IN_PROGRESS'] } },
+    })
+    for (const t of tasks) {
+      if (t.title.includes('家暴安全信息')) {
+        await this.prisma.task.update({
+          where: { id: t.id },
+          data: { status: 'DONE', completedAt: new Date(), completedById: userId },
+        })
+      }
+    }
+  }
+
+  // 发起家暴协同转介：案件转给司法所、妇联或派出所协同处理（可多选，幂等）
+  async safetyReferrals(user: JwtUser, id: string, dto: any) {
+    const kase = await this.getCaseOr404(id)
+    if (!kase.isDomesticViolence) throw new BadRequestException('仅家庭暴力风险案件可发起协同转介')
+    const units: string[] = Array.isArray(dto.units) && dto.units.length ? dto.units : []
+    const valid = units.filter((u) => ['JUDICIAL', 'WOMEN_FEDERATION', 'POLICE'].includes(u))
+    if (!valid.length) throw new BadRequestException('请至少选择一个协同单位（司法所/妇联/派出所）')
+
+    // 安全信息至少记录其一，避免在没有任何保护信息时把案件孤立转走
+    const sp = await this.prisma.safetyPlan.findUnique({ where: { caseId: id } })
+    const hasSafety =
+      !!sp &&
+      (!!sp.emergencyContactPhone || sp.shelterArranged || sp.policeReported || !!sp.notes)
+    if (!hasSafety) {
+      throw new BadRequestException('请先记录安全联系人、临时住所或报警情况，再发起协同转介')
+    }
+
+    const existing = await this.prisma.referral.findMany({
+      where: { caseId: id, isSafetyReferral: true, type: { in: valid } },
+    })
+    const existingTypes = new Set(existing.map((r) => r.type))
+    const created: string[] = []
+    for (const type of valid) {
+      if (existingTypes.has(type)) continue
+      const unitUsers = await this.prisma.user.findMany({
+        where: { role: type as any },
+        select: { id: true, organization: true },
+        orderBy: { createdAt: 'asc' },
+      })
+      const toUnit =
+        unitUsers[0]?.organization ||
+        (type === 'JUDICIAL' ? `${kase.street || '街道'}司法所` : type === 'WOMEN_FEDERATION' ? '街道妇女联合会' : '辖区派出所')
+      const ref = await this.prisma.referral.create({
+        data: {
+          caseId: id,
+          type,
+          fromStreet: kase.street,
+          toUnit,
+          isSafetyReferral: true,
+          reason: dto.reason || '家暴风险案件，需协同保护申请人人身安全，律师咨询与本单位协同推进',
+          createdById: user.sub,
+        },
+      })
+      // 默认安排接收后 7 天回访
+      await this.prisma.referralFollowUp.create({
+        data: { referralId: ref.id, scheduledAt: new Date(Date.now() + DEFAULT_FOLLOW_UP_DAYS * 86400000) },
+      })
+      created.push(SAFETY_UNIT_LABELS[type])
+
+      // 纳入服务单协同（同单位首位成员），体现多角色同一服务单
+      if (kase.serviceOrder && unitUsers[0]) {
+        await this.prisma.serviceOrderParticipant.upsert({
+          where: { serviceOrderId_userId: { serviceOrderId: kase.serviceOrder.id, userId: unitUsers[0].id } },
+          update: {},
+          create: { serviceOrderId: kase.serviceOrder.id, userId: unitUsers[0].id, duty: `${SAFETY_UNIT_LABELS[type]}协同` },
+        })
+      }
+    }
+
+    // 安全处置完成：安全信息已记录 + 至少一个协同单位转介
+    await this.prisma.case.update({ where: { id }, data: { dvHandled: true } })
+    await this.event(
+      id,
+      user.sub,
+      '发起家暴协同转介',
+      `转介至 ${created.length ? created.join('、') : '（已存在）'}协同处理；当事人联系方式与住址仅对授权人员可见，已安排 ${DEFAULT_FOLLOW_UP_DAYS} 天后回访`,
+    )
+    return this.findOne(user, id)
+  }
+
+  // 协同单位接收转介：登记接收人（成为授权人员），保留转介节点
   async updateReferral(user: JwtUser, refId: string, dto: any) {
     const ref = await this.prisma.referral.findUnique({ where: { id: refId }, include: { case: true } })
     if (!ref) throw new NotFoundException('转介单不存在')
+    // 家暴协同转介只能由对应协同单位接收/退回
+    if (ref.isSafetyReferral) {
+      const wantRole = Object.entries(UNIT_ROLE_TO_REFERRAL).find(([, t]) => t === ref.type)?.[0]
+      if (wantRole && user.role !== wantRole && user.role !== 'ADMIN') {
+        throw new ForbiddenException('该协同转介由对应单位的授权人员接收')
+      }
+    } else if (['WOMEN_FEDERATION', 'POLICE'].includes(user.role)) {
+      throw new ForbiddenException('妇联/派出所仅可办理本单位家暴协同转介')
+    }
     const updated = await this.prisma.referral.update({
       where: { id: refId },
-      data: { status: dto.status, handledAt: new Date() },
+      data: {
+        status: dto.status,
+        handledAt: new Date(),
+        acceptedById: dto.status === 'ACCEPTED' ? user.sub : ref.acceptedById,
+      },
     })
+    // 接收即对接收人授权查看当事人联系方式与住址
+    if (dto.status === 'ACCEPTED') {
+      await this.prisma.referralAuthorization.upsert({
+        where: { referralId_userId: { referralId: refId, userId: user.sub } },
+        update: { revokedAt: null },
+        create: { referralId: refId, userId: user.sub, grantedById: ref.createdById, scope: 'CONTACT_ADDRESS' },
+      })
+      const order = await this.prisma.serviceOrder.findUnique({ where: { caseId: ref.caseId } })
+      if (order) {
+        await this.prisma.serviceOrderParticipant.upsert({
+          where: { serviceOrderId_userId: { serviceOrderId: order.id, userId: user.sub } },
+          update: {},
+          create: { serviceOrderId: order.id, userId: user.sub, duty: `${SAFETY_UNIT_LABELS[ref.type] || '协同单位'}接收人` },
+        })
+      }
+    }
     if (dto.status === 'ACCEPTED' && ref.type === 'CROSS_STREET' && ref.toStreet) {
       await this.prisma.case.update({ where: { id: ref.caseId }, data: { street: ref.toStreet, source: 'CROSS_STREET' } })
     }
-    await this.event(ref.caseId, user.sub, '转介处理', `${ref.toUnit}：${dto.status}`)
+    await this.event(ref.caseId, user.sub, '转介处理', `${ref.toUnit}：${dto.status}${dto.status === 'ACCEPTED' ? '（接收人已获授权查看联系方式与住址）' : ''}`)
+    return updated
+  }
+
+  // 工作人员为某转介追加授权人员（协同单位内可查看联系方式/住址的成员）
+  async grantReferralAccess(user: JwtUser, refId: string, dto: any) {
+    const ref = await this.prisma.referral.findUnique({ where: { id: refId }, include: { case: true } })
+    if (!ref) throw new NotFoundException('转介单不存在')
+    if (!ref.isSafetyReferral) throw new BadRequestException('仅家暴协同转介需要授权管理')
+    const target = await this.prisma.user.findUnique({ where: { id: dto.userId } })
+    if (!target) throw new BadRequestException('用户不存在')
+    const wantRole = Object.entries(UNIT_ROLE_TO_REFERRAL).find(([, t]) => t === ref.type)?.[0]
+    if (wantRole && target.role !== wantRole) {
+      throw new BadRequestException(`只能授权给${SAFETY_UNIT_LABELS[ref.type]}的工作人员`)
+    }
+    const grant = await this.prisma.referralAuthorization.upsert({
+      where: { referralId_userId: { referralId: refId, userId: dto.userId } },
+      update: { revokedAt: dto.revoke ? new Date() : null },
+      create: { referralId: refId, userId: dto.userId, grantedById: user.sub, scope: 'CONTACT_ADDRESS' },
+    })
+    await this.event(ref.caseId, user.sub, dto.revoke ? '撤销查看授权' : '授予查看授权', `${SAFETY_UNIT_LABELS[ref.type]}：${target.name}（联系方式与住址）`)
+    return grant
+  }
+
+  // 安排/登记转介回访（保留后续回访时间）
+  async scheduleReferralFollowUp(user: JwtUser, refId: string, dto: any) {
+    const ref = await this.prisma.referral.findUnique({ where: { id: refId } })
+    if (!ref) throw new NotFoundException('转介单不存在')
+    this.assertUnitOwnsReferral(ref, user)
+    const follow = await this.prisma.referralFollowUp.create({
+      data: {
+        referralId: refId,
+        scheduledAt: new Date(dto.scheduledAt),
+        result: dto.result || null,
+        doneAt: dto.result ? new Date() : null,
+        doneById: dto.result ? user.sub : null,
+      },
+    })
+    await this.event(ref.caseId, user.sub, '转介回访', `${ref.toUnit}：计划 ${new Date(dto.scheduledAt).toLocaleString('zh-CN')}${dto.result ? `；结果：${dto.result}` : ''}`)
+    return follow
+  }
+
+  async completeReferralFollowUp(user: JwtUser, followId: string, dto: any) {
+    const follow = await this.prisma.referralFollowUp.findUnique({ where: { id: followId }, include: { referral: true } })
+    if (!follow) throw new NotFoundException('回访记录不存在')
+    this.assertUnitOwnsReferral(follow.referral, user)
+    const updated = await this.prisma.referralFollowUp.update({
+      where: { id: followId },
+      data: { result: dto.result, doneAt: new Date(), doneById: user.sub },
+    })
+    await this.event(follow.referral.caseId, user.sub, '转介回访完成', `${follow.referral.toUnit}：${dto.result}`)
     return updated
   }
 
   async listReferrals(user: JwtUser) {
-    return this.prisma.referral.findMany({
+    const rows = await this.prisma.referral.findMany({
       include: {
-        case: { select: { id: true, caseNo: true, title: true, type: true, status: true, priority: true, confidentiality: true, applicantName: true } },
+        case: { select: { id: true, caseNo: true, title: true, type: true, status: true, priority: true, confidentiality: true, applicantName: true, isDomesticViolence: true } },
         createdBy: { select: { id: true, name: true } },
+        acceptedBy: { select: { id: true, name: true, role: true, organization: true } },
+        grants: { include: { user: { select: { id: true, name: true, role: true, organization: true } } } },
+        followUps: { orderBy: { scheduledAt: 'asc' } },
       },
       orderBy: { createdAt: 'desc' },
       take: 200,
     })
+    // 妇联/派出所仅能看到转介给本单位的单据；司法所/工作人员/管理员看全部
+    if (user.role === 'WOMEN_FEDERATION' || user.role === 'POLICE') {
+      const wantType = UNIT_ROLE_TO_REFERRAL[user.role]
+      return rows.filter((r) => r.type === wantType)
+    }
+    return rows
   }
 
   // ---------- 结案归档 ----------

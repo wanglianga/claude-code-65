@@ -9,12 +9,14 @@ datasource db {
 
 // ---------------- 用户与角色 ----------------
 enum Role {
-  ADMIN       // 平台管理员
-  RESIDENT    // 居民
-  STAFF       // 社区工作人员
-  LAWYER      // 值班律师
-  JUDICIAL    // 司法所工作人员
-  VOLUNTEER   // 志愿者
+  ADMIN            // 平台管理员
+  RESIDENT         // 居民
+  STAFF            // 社区工作人员
+  LAWYER           // 值班律师
+  JUDICIAL         // 司法所工作人员
+  VOLUNTEER        // 志愿者
+  WOMEN_FEDERATION // 妇联（家暴协同单位）
+  POLICE           // 派出所（家暴协同单位）
 }
 
 model User {
@@ -43,6 +45,8 @@ model User {
   events         CaseEvent[]
   referrals      Referral[]
   deadlineReminders DeadlineReminder[]
+  acceptedReferrals Referral[]       @relation("ReferralAcceptedBy")
+  referralGrants ReferralAuthorization[]
 }
 
 // ---------------- 案件 ----------------
@@ -140,6 +144,14 @@ model Case {
   residentIntent       String?   // 居民是否愿意立即启动程序：WILLING / NOT_YET / DECLINED
   residentIntentNote   String?
   street               String?  // 所属街道
+  applicantAddress     String?  // 申请人现住址/详细地址（家暴案件按授权范围保密）
+
+  // 家暴风险信号：婚姻咨询中出现威胁、伤害或控制财产等描述时由平台自动识别
+  dvSignalThreat       Boolean  @default(false) // 存在威胁/恐吓描述
+  dvSignalHarm         Boolean  @default(false) // 存在伤害/暴力描述
+  dvSignalControl      Boolean  @default(false) // 存在控制财产/经济控制描述
+  dvSignalNote         String?  // 命中的风险描述原文摘录
+  dvHandled            Boolean  @default(false) // 社区工作人员是否已完成家暴安全处置（安全信息记录+协同转介）
 
   // 初审
   reviewedById   String?
@@ -167,6 +179,7 @@ model Case {
   archive        Archive?
   serviceOrder   ServiceOrder?
   reminders      DeadlineReminder[]
+  safetyPlan     SafetyPlan?
 }
 
 // 证据材料
@@ -302,7 +315,7 @@ model ConflictCheck {
   checkedAt   DateTime @default(now())
 }
 
-// 转介（司法所转介 / 跨街道转介 / 其他单位）
+// 转介（司法所转介 / 跨街道转介 / 家暴协同转介 / 其他单位）
 enum ReferralStatus {
   PENDING
   ACCEPTED
@@ -314,7 +327,7 @@ model Referral {
   id          String @id @default(cuid())
   caseId      String
   case        Case   @relation(fields: [caseId], references: [id], onDelete: Cascade)
-  type        String // JUDICIAL / CROSS_STREET / OTHER_ORG
+  type        String // JUDICIAL / CROSS_STREET / WOMEN_FEDERATION / POLICE / OTHER_ORG
   fromStreet  String?
   toStreet    String?
   toUnit      String // 接收单位
@@ -324,6 +337,62 @@ model Referral {
   createdBy   User?   @relation(fields: [createdById], references: [id])
   createdAt   DateTime @default(now())
   handledAt   DateTime?
+  acceptedById String? // 实际接收人（协同单位授权人员）
+  acceptedBy   User?  @relation("ReferralAcceptedBy", fields: [acceptedById], references: [id])
+  isSafetyReferral Boolean @default(false) // 是否家暴风险协同转介（司法所/妇联/派出所联动）
+  grants      ReferralAuthorization[]
+  followUps   ReferralFollowUp[]
+}
+
+// 家暴案件安全处置信息（社区工作人员记录：安全联系人 / 临时住所 / 报警情况）
+model SafetyPlan {
+  id              String   @id @default(cuid())
+  caseId          String   @unique
+  case            Case     @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  recordedById    String?
+  recordedAt      DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  emergencyContactName   String? // 紧急安全联系人
+  emergencyContactPhone  String?
+  emergencyContactRel    String? // 与申请人关系
+  shelterName      String? // 临时安置点/庇护场所名称
+  shelterAddress   String? // 临时住所地址（敏感，按授权保密）
+  shelterArranged  Boolean @default(false) // 是否已安排临时住所
+  policeReported   Boolean @default(false) // 是否已报警
+  policeReportNo   String?  // 报警回执/受案编号
+  policeReportAt   DateTime? // 最近报警时间
+  policeNote       String?  // 报警处置情况
+  riskLevel        String?  // HIGH / MEDIUM / LOW
+  notes            String?
+}
+
+// 转介授权：只有被授权的协同单位人员可查看当事人联系方式和住址
+model ReferralAuthorization {
+  id          String   @id @default(cuid())
+  referralId  String
+  referral    Referral @relation(fields: [referralId], references: [id], onDelete: Cascade)
+  userId      String
+  user        User     @relation(fields: [userId], references: [id])
+  scope       String   @default("CONTACT_ADDRESS") // 授权范围：联系方式+住址
+  grantedById String?
+  grantedAt   DateTime @default(now())
+  revokedAt   DateTime?
+
+  @@unique([referralId, userId])
+}
+
+// 转介后续回访（协同单位接收后，平台保留转介节点与后续回访时间）
+model ReferralFollowUp {
+  id          String   @id @default(cuid())
+  referralId  String
+  referral    Referral @relation(fields: [referralId], references: [id], onDelete: Cascade)
+  scheduledAt DateTime // 计划回访时间
+  result      String?  // 回访结果
+  doneAt      DateTime? // 实际完成时间
+  doneById    String?
+  createdAt   DateTime @default(now())
+
+  @@index([scheduledAt])
 }
 
 // 期限提醒记录（工作人员提醒居民关键期限，及时性用于服务质量复盘）

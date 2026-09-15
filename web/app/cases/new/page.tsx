@@ -3,7 +3,7 @@
 import { useRouter } from 'next/navigation'
 import { useEffect, useState } from 'react'
 import { ErrorBox, Nav } from '../../components'
-import { api, getUser, SOURCE_LABELS, TYPE_LABELS, URGENCY_LABELS, SessionUser } from '../../lib'
+import { api, detectDvClient, getUser, SOURCE_LABELS, TYPE_LABELS, URGENCY_LABELS, SessionUser, DV_SIGNAL_LABELS } from '../../lib'
 
 const EMPTY_KEY_DATE = { label: '', date: '', kind: 'other' }
 
@@ -14,7 +14,7 @@ export default function NewCasePage() {
   const [submitting, setSubmitting] = useState(false)
   const [form, setForm] = useState<any>({
     title: '', type: 'LABOR_DISPUTE', description: '', urgency: 'NORMAL',
-    source: 'OFFLINE_PAPER', applicantName: '', applicantPhone: '',
+    source: 'OFFLINE_PAPER', applicantName: '', applicantPhone: '', applicantAddress: '',
     familyIncome: '', opposingParties: '', statuteOfLimitations: '', incidentDate: '', deadlineNotes: '', street: '',
     isDisabled: false, involvesMinor: false, isWageArrearsGroup: false,
     isDomesticViolence: false, isElderlySupport: false, isMinorRights: false, opponentSued: false,
@@ -32,6 +32,8 @@ export default function NewCasePage() {
   if (!user) return null
   const isStaff = ['STAFF', 'ADMIN'].includes(user.role)
   const set = (k: string, v: any) => setForm((f: any) => ({ ...f, [k]: v }))
+
+  const dvHint = detectDvClient(form.type, form.description)
 
   async function submit(e: React.FormEvent) {
     e.preventDefault()
@@ -87,6 +89,10 @@ export default function NewCasePage() {
                     <label className="label">申请人联系电话</label>
                     <input className="input" value={form.applicantPhone} onChange={(e) => set('applicantPhone', e.target.value)} />
                   </div>
+                  <div style={{ gridColumn: '1 / -1' }}>
+                    <label className="label">申请人现住址（家暴等保密案件仅授权人员可见）</label>
+                    <input className="input" value={form.applicantAddress} onChange={(e) => set('applicantAddress', e.target.value)} placeholder="如：XX街道XX小区（详细住址将按授权范围保密）" />
+                  </div>
                 </div>
               </>
             )}
@@ -114,6 +120,17 @@ export default function NewCasePage() {
             <input className="input" value={form.title} onChange={(e) => set('title', e.target.value)} placeholder="一句话概括诉求，如：公司拖欠三个月工资" required />
             <label className="label">诉求与案件事实 *</label>
             <textarea className="input" value={form.description} onChange={(e) => set('description', e.target.value)} placeholder="请描述事情经过、诉求、涉及金额、对方情况等" required />
+            {dvHint.has && (
+              <div className="alert alert-red mt8">
+                🚨 <b>系统识别到家暴风险信号：</b>
+                {[['threat', dvHint.threat], ['harm', dvHint.harm], ['control', dvHint.control]].filter(([, v]) => v).map(([k]) => DV_SIGNAL_LABELS[k as string]).join('；')}。
+                <br />提交后平台将按家暴案件<strong>严格保密、最高优先级</strong>处理，并提示社区工作人员
+                <strong>记录安全联系人、临时住所和报警情况</strong>，把案件转介司法所、妇联或派出所协同处理，律师咨询不会孤立推进。
+                {!form.isDomesticViolence && (
+                  <button type="button" className="btn btn-sm" style={{ marginLeft: 8 }} onClick={() => set('isDomesticViolence', true)}>已知悉，标记为家暴风险</button>
+                )}
+              </div>
+            )}
 
             <h3>资格与特殊情形（用于法律援助资格初审与特殊规则）</h3>
             <div className="form-grid">

@@ -74,8 +74,8 @@ export function assessDeadlineRisk(kase: {
   const typeLabel = kase.type === 'LABOR_DISPUTE' ? '劳动仲裁时效（1年）' : kase.type === 'HOUSING_RENTAL' ? '民事诉讼时效（3年）' : '关键期限'
   const reasons: string[] = []
 
-  if (['CLOSED', 'REFERRED'].includes(kase.status || '')) {
-    return { level: 'NONE', deadline, daysLeft, reasons: ['案件已办结/已转介，期限风险解除'] }
+  if (['CLOSED', 'REFERRED', 'FOLLOW_UP'].includes(kase.status || '')) {
+    return { level: 'NONE', deadline, daysLeft, reasons: ['案件已办结/已转介/回访跟进中，期限风险解除'] }
   }
 
   let level: DeadlineRisk['level']

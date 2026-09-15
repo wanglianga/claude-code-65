@@ -47,6 +47,7 @@ model User {
   deadlineReminders DeadlineReminder[]
   acceptedReferrals Referral[]       @relation("ReferralAcceptedBy")
   referralGrants ReferralAuthorization[]
+  materialProxies MaterialProxy[]    @relation("ProxyVolunteer")
 }
 
 // ---------------- 案件 ----------------
@@ -95,6 +96,7 @@ enum CaseStatus {
   IN_SERVICE          // 服务进行中
   MATERIAL_SUPPLEMENT // 待补正材料
   REFERRED            // 已转介
+  FOLLOW_UP           // 回访跟进中
   CLOSED              // 已结案归档
 }
 
@@ -169,7 +171,13 @@ model Case {
   updatedAt      DateTime @updatedAt
   closedAt       DateTime?
 
+  // 最近一次回访（回访结果会更新案件状态）
+  lastFollowUpAt      DateTime?
+  lastFollowUpResult  String?
+  lastFollowUpOutcome String? // RESOLVED 已解决 / ONGOING 继续跟进 / NEED_REFERRAL 需再次转介
+
   materials      Material[]
+  materialProxies MaterialProxy[]
   keyDates       KeyDate[]
   tasks          Task[]
   appointments   Appointment[]
@@ -202,6 +210,56 @@ model Material {
   uploadedById String?
   uploadedBy   User?   @relation(fields: [uploadedById], references: [id])
   createdAt  DateTime @default(now())
+
+  // 材料线下代传（志愿者上门拍照/扫描/代交复印件）
+  method       String   @default("UPLOAD") // UPLOAD 线上上传 / PROXY_PHOTO 上门拍照 / PROXY_SCAN 上门扫描 / PROXY_COPY 代交复印件
+  proxyId      String?  // 由哪张代传单产生
+  proxy        MaterialProxy? @relation(fields: [proxyId], references: [id])
+  purpose      String?  // 材料用途说明（随代传完成告知居民）
+  originalReturned Boolean @default(false) // 原件是否已归还居民
+  noticeSentAt DateTime? // 向居民发送用途说明与销毁提醒的时间
+}
+
+// 材料线下代传单：老人/残障居民无法线上上传时，志愿者预约上门拍照、扫描或代交复印件
+enum MaterialProxyStatus {
+  REQUESTED   // 已申请，待志愿者认领
+  ASSIGNED    // 已认领，已预约
+  PICKED_UP   // 已取走原件（涉及原件时）
+  SCANNED     // 已拍照/扫描，证据已入卷
+  RETURNED    // 原件已归还
+  CONFIRMED   // 居民已确认
+  CANCELLED   // 已取消
+}
+
+model MaterialProxy {
+  id           String   @id @default(cuid())
+  caseId       String
+  case         Case     @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  materialName String   // 需代传的材料名称
+  reason       String?  // 代传原因（老人/残障无法线上上传等）
+  method       String   @default("PROXY_SCAN") // PROXY_PHOTO / PROXY_SCAN / PROXY_COPY
+  involvesOriginal Boolean @default(false) // 是否涉及原件（取走—扫描—归还—确认全链）
+  purpose      String?  // 材料用途
+  status       MaterialProxyStatus @default(REQUESTED)
+  // 申请人与认领志愿者
+  requestedById String?
+  volunteerId   String?
+  volunteer     User?   @relation("ProxyVolunteer", fields: [volunteerId], references: [id])
+  // 上门预约与原件流转时间
+  scheduledAt   DateTime? // 预约上门时间
+  pickedUpAt    DateTime? // 取走原件时间
+  scannedAt     DateTime? // 拍照/扫描完成（证据入卷）时间
+  returnedAt    DateTime? // 原件归还时间
+  residentConfirmedAt DateTime? // 居民确认时间
+  completedAt   DateTime?
+  // 销毁提醒
+  destroyNoticeSentAt DateTime? // 用途说明+销毁提醒发送时间
+  note          String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  materials     Material[]
+
+  @@index([status])
 }
 
 // 关键时间节点
@@ -245,6 +303,7 @@ model ServiceOrderParticipant {
 // 协同任务
 enum TaskType {
   MATERIAL_SUPPLEMENT // 材料补正
+  MATERIAL_PROXY      // 材料线下代传（志愿者上门拍照/扫描/代交复印件）
   HOME_VISIT          // 上门协助（老人/残障）
   CONFLICT_CHECK      // 利益冲突核查
   FOLLOW_UP           // 回访

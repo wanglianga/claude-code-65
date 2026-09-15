@@ -53,7 +53,8 @@ function parseStrictHours(v: any): number | null {
 const CASE_INCLUDE = {  resident: { select: { id: true, name: true, phone: true } },
   reviewedBy: { select: { id: true, name: true } },
   lawyer: { select: { id: true, name: true, organization: true, onLeave: true } },
-  materials: { include: { uploadedBy: { select: { id: true, name: true, role: true } } }, orderBy: { createdAt: 'asc' as const } },
+  materials: { include: { uploadedBy: { select: { id: true, name: true, role: true } }, proxy: { include: { volunteer: { select: { id: true, name: true } } } } }, orderBy: { createdAt: 'asc' as const } },
+  materialProxies: { include: { volunteer: { select: { id: true, name: true, phone: true } } }, orderBy: { createdAt: 'desc' as const } },
   keyDates: { orderBy: { date: 'asc' as const } },
   tasks: {
     include: {
@@ -621,6 +622,212 @@ export class CasesService {
     return m
   }
 
+  // ---------- 材料线下代传（志愿者上门拍照/扫描/代交复印件） ----------
+  async createProxy(user: JwtUser, id: string, dto: any) {
+    const kase = await this.getCaseOr404(id)
+    // 工作人员、申请人本人、志愿者（可主动预约上门）均可发起
+    if (!['STAFF', 'ADMIN', 'VOLUNTEER'].includes(user.role) && kase.residentId !== user.sub) {
+      throw new ForbiddenException('无权发起材料代传')
+    }
+    if (kase.status === 'CLOSED') throw new BadRequestException('案件已结案，不能再发起代传')
+    const method = ['PROXY_PHOTO', 'PROXY_SCAN', 'PROXY_COPY'].includes(dto.method) ? dto.method : 'PROXY_SCAN'
+    await this.prisma.materialProxy.create({
+      data: {
+        caseId: id,
+        materialName: dto.materialName,
+        reason: dto.reason || (kase.isDisabled || kase.isElderlySupport ? '老人/残障居民无法线上上传' : null),
+        method,
+        involvesOriginal: !!dto.involvesOriginal,
+        purpose: dto.purpose || null,
+        requestedById: user.sub,
+      },
+    })
+    // 志愿者代传任务（角色任务：任意志愿者可认领）
+    await this.prisma.task.create({
+      data: {
+        caseId: id,
+        type: 'MATERIAL_PROXY',
+        title: `上门代传材料：${dto.materialName}`,
+        description: `预约上门${method === 'PROXY_PHOTO' ? '拍照' : method === 'PROXY_COPY' ? '代交复印件' : '扫描'}${dto.involvesOriginal ? '（涉及原件，需登记取走/扫描/归还/居民确认）' : ''}`,
+        assigneeRole: 'VOLUNTEER',
+        createdById: user.sub,
+        dueDate: dto.scheduledAt ? new Date(dto.scheduledAt) : null,
+      },
+    })
+    if (user.role === 'VOLUNTEER' && kase.serviceOrder) {
+      await this.prisma.serviceOrderParticipant.upsert({
+        where: { serviceOrderId_userId: { serviceOrderId: kase.serviceOrder.id, userId: user.sub } },
+        update: {},
+        create: { serviceOrderId: kase.serviceOrder.id, userId: user.sub, duty: '上门代传材料' },
+      })
+    }
+    await this.event(id, user.sub, '发起材料代传', `${dto.materialName}（${method === 'PROXY_PHOTO' ? '上门拍照' : method === 'PROXY_COPY' ? '代交复印件' : '上门扫描'}），待志愿者认领`)
+    return this.findOne(user, id)
+  }
+
+  async listProxies(user: JwtUser) {
+    const where: any = {}
+    if (user.role === 'VOLUNTEER') {
+      where.OR = [{ volunteerId: user.sub }, { status: 'REQUESTED' }]
+    } else if (user.role === 'RESIDENT') {
+      where.case = { residentId: user.sub }
+    } else if (!['STAFF', 'ADMIN', 'JUDICIAL'].includes(user.role)) {
+      throw new ForbiddenException('无权查看代传单')
+    }
+    return this.prisma.materialProxy.findMany({
+      where,
+      include: {
+        case: { select: { id: true, caseNo: true, title: true, status: true, residentId: true, applicantName: true } },
+        volunteer: { select: { id: true, name: true, phone: true } },
+      },
+      orderBy: [{ status: 'asc' }, { createdAt: 'desc' }],
+      take: 200,
+    })
+  }
+
+  private async getProxyOr404(proxyId: string) {
+    const proxy = await this.prisma.materialProxy.findUnique({ where: { id: proxyId }, include: { case: true } })
+    if (!proxy) throw new NotFoundException('代传单不存在')
+    return proxy
+  }
+
+  private assertProxyActor(proxy: any, user: JwtUser) {
+    if (['STAFF', 'ADMIN'].includes(user.role)) return
+    if (user.role === 'VOLUNTEER' && proxy.volunteerId === user.sub) return
+    if (user.role === 'RESIDENT' && proxy.case.residentId === user.sub) return
+    throw new ForbiddenException('仅认领志愿者、申请人或工作人员可操作')
+  }
+
+  async claimProxy(user: JwtUser, proxyId: string, dto: any) {
+    if (user.role !== 'VOLUNTEER') throw new ForbiddenException('仅志愿者可认领代传单')
+    const proxy = await this.getProxyOr404(proxyId)
+    if (proxy.status !== 'REQUESTED') throw new BadRequestException('该代传单已被认领或已结束')
+    await this.prisma.materialProxy.update({
+      where: { id: proxyId },
+      data: { volunteerId: user.sub, status: 'ASSIGNED', scheduledAt: dto.scheduledAt ? new Date(dto.scheduledAt) : proxy.scheduledAt },
+    })
+    // 认领对应志愿者角色任务
+    const task = await this.prisma.task.findFirst({
+      where: { caseId: proxy.caseId, type: 'MATERIAL_PROXY', assigneeRole: 'VOLUNTEER', assigneeId: null, status: 'OPEN' },
+    })
+    if (task) await this.prisma.task.update({ where: { id: task.id }, data: { assigneeId: user.sub, status: 'IN_PROGRESS' } })
+    const order = await this.prisma.serviceOrder.findUnique({ where: { caseId: proxy.caseId } })
+    if (order) {
+      await this.prisma.serviceOrderParticipant.upsert({
+        where: { serviceOrderId_userId: { serviceOrderId: order.id, userId: user.sub } },
+        update: { duty: '上门代传材料' },
+        create: { serviceOrderId: order.id, userId: user.sub, duty: '上门代传材料' },
+      })
+    }
+    await this.event(proxy.caseId, user.sub, '志愿者认领代传', `认领材料：${proxy.materialName}${dto.scheduledAt ? `；预约上门 ${new Date(dto.scheduledAt).toLocaleString('zh-CN')}` : ''}`)
+    return this.findOne(user, proxy.caseId)
+  }
+
+  async scheduleProxy(user: JwtUser, proxyId: string, dto: any) {
+    const proxy = await this.getProxyOr404(proxyId)
+    this.assertProxyActor(proxy, user)
+    if (!['ASSIGNED', 'REQUESTED'].includes(proxy.status)) throw new BadRequestException('当前状态不可修改预约时间')
+    if (!dto.scheduledAt) throw new BadRequestException('请选择预约上门时间')
+    await this.prisma.materialProxy.update({ where: { id: proxyId }, data: { scheduledAt: new Date(dto.scheduledAt) } })
+    await this.event(proxy.caseId, user.sub, '预约上门代传', `${proxy.materialName}：${new Date(dto.scheduledAt).toLocaleString('zh-CN')}`)
+    return this.prisma.materialProxy.findUnique({ where: { id: proxyId } })
+  }
+
+  async markProxyStage(user: JwtUser, proxyId: string, stage: string, dto: any) {
+    const proxy = await this.getProxyOr404(proxyId)
+    // 取走/扫描/归还由认领志愿者或工作人员登记，申请人不可自行登记
+    if (user.role === 'RESIDENT') throw new ForbiddenException('取走/扫描/归还由志愿者或工作人员登记')
+    this.assertProxyActor(proxy, user)
+    if (['CANCELLED', 'CONFIRMED'].includes(proxy.status)) throw new BadRequestException('代传单已结束')
+    const now = new Date()
+    const data: any = { note: dto.note !== undefined ? dto.note : proxy.note }
+
+    if (stage === 'PICKED_UP') {
+      if (!proxy.involvesOriginal) throw new BadRequestException('该代传不涉及原件，无需登记取走原件')
+      if (!['ASSIGNED', 'PICKED_UP'].includes(proxy.status)) throw new BadRequestException('需先认领并预约')
+      Object.assign(data, { status: 'PICKED_UP', pickedUpAt: proxy.pickedUpAt || now })
+      await this.event(proxy.caseId, user.sub, '代传：取走原件', `${proxy.materialName}${dto.note ? `：${dto.note}` : ''}`)
+    } else if (stage === 'SCANNED') {
+      if (!['ASSIGNED', 'PICKED_UP', 'SCANNED'].includes(proxy.status)) throw new BadRequestException('当前状态不可登记扫描')
+      // 涉及原件时须先登记取走，再拍照/扫描（取走→扫描→归还→确认）
+      if (proxy.involvesOriginal && !proxy.pickedUpAt && proxy.status !== 'PICKED_UP') {
+        throw new BadRequestException('涉及原件：请先登记「取走原件」再拍照/扫描')
+      }
+      const purpose = dto.purpose || proxy.purpose
+      // 拍照/扫描完成：生成证据材料（律师端证据状态随之更新为“已提交待核验”）
+      const material = await this.prisma.material.create({
+        data: {
+          caseId: proxy.caseId,
+          name: proxy.materialName,
+          kind: dto.kind || (proxy.method === 'PROXY_PHOTO' ? '照片' : proxy.method === 'PROXY_COPY' ? '复印件' : '扫描件'),
+          note: `志愿者上门代传${proxy.involvesOriginal ? '（原件扫描）' : ''}${dto.note ? `：${dto.note}` : ''}`,
+          status: 'RECEIVED',
+          uploadedById: proxy.volunteerId || user.sub,
+          method: proxy.method,
+          proxyId: proxy.id,
+          purpose: purpose || null,
+        },
+      })
+      Object.assign(data, { status: 'SCANNED', scannedAt: proxy.scannedAt || now, purpose: purpose || proxy.purpose })
+      await this.event(proxy.caseId, user.sub, '代传：拍照/扫描入卷', `${proxy.materialName} 已代为${proxy.method === 'PROXY_PHOTO' ? '拍照' : proxy.method === 'PROXY_COPY' ? '提交复印件' : '扫描'}，证据状态更新为「已提交待核验」（材料 ${material.id.slice(-6)}）`)
+    } else if (stage === 'RETURNED') {
+      if (!proxy.involvesOriginal) throw new BadRequestException('该代传不涉及原件，无需登记归还')
+      if (!['PICKED_UP', 'SCANNED', 'RETURNED'].includes(proxy.status)) throw new BadRequestException('需先取走并扫描原件')
+      if (!proxy.scannedAt && proxy.status !== 'SCANNED') throw new BadRequestException('请先完成拍照/扫描再归还原件')
+      Object.assign(data, { status: 'RETURNED', returnedAt: proxy.returnedAt || now })
+      await this.prisma.material.updateMany({ where: { proxyId: proxy.id }, data: { originalReturned: true } })
+      await this.event(proxy.caseId, user.sub, '代传：原件归还', `${proxy.materialName} 已归还居民，待居民确认`)
+    } else {
+      throw new BadRequestException('未知代传环节')
+    }
+    await this.prisma.materialProxy.update({ where: { id: proxyId }, data })
+    return this.findOne(user, proxy.caseId)
+  }
+
+  async confirmProxy(user: JwtUser, proxyId: string, dto: any) {
+    const proxy = await this.getProxyOr404(proxyId)
+    this.assertProxyActor(proxy, user)
+    if (!proxy.scannedAt) throw new BadRequestException('材料尚未拍照/扫描入卷，不能确认')
+    if (proxy.involvesOriginal && !proxy.returnedAt) {
+      throw new BadRequestException('原件尚未归还居民，需先登记归还再由居民确认')
+    }
+    const purpose = dto.purpose || proxy.purpose || '用于本案件法律援助办理与举证'
+    await this.prisma.materialProxy.update({
+      where: { id: proxyId },
+      data: { status: 'CONFIRMED', residentConfirmedAt: new Date(), completedAt: new Date(), purpose, destroyNoticeSentAt: new Date() },
+    })
+    // 代传完成：证据写入材料用途，并向居民端发送用途说明与销毁提醒
+    await this.prisma.material.updateMany({
+      where: { proxyId: proxy.id },
+      data: { purpose, noticeSentAt: new Date() },
+    })
+    await this.prisma.task.updateMany({
+      where: { caseId: proxy.caseId, type: 'MATERIAL_PROXY', status: { in: ['OPEN', 'IN_PROGRESS'] } },
+      data: { status: 'DONE', completedAt: new Date(), completedById: user.sub },
+    })
+    await this.event(
+      proxy.caseId,
+      user.sub,
+      '代传完成并居民确认',
+      `${proxy.materialName} 已完成代传；已向居民告知材料用途（${purpose}）与销毁/返还提醒：案件办结后可申请返还或销毁代传复印件/影像，请勿自行长期留存`,
+    )
+    return this.findOne(user, proxy.caseId)
+  }
+
+  async cancelProxy(user: JwtUser, proxyId: string, dto: any) {
+    const proxy = await this.getProxyOr404(proxyId)
+    if (!['STAFF', 'ADMIN'].includes(user.role) && proxy.requestedById !== user.sub) {
+      throw new ForbiddenException('仅发起人或工作人员可取消')
+    }
+    await this.prisma.materialProxy.update({ where: { id: proxyId }, data: { status: 'CANCELLED' } })
+    await this.prisma.task.updateMany({
+      where: { caseId: proxy.caseId, type: 'MATERIAL_PROXY', status: { in: ['OPEN', 'IN_PROGRESS'] } },
+      data: { status: 'CANCELLED' },
+    })
+    await this.event(proxy.caseId, user.sub, '取消材料代传', `${proxy.materialName}${dto.reason ? `：${dto.reason}` : ''}`)
+    return this.prisma.materialProxy.findUnique({ where: { id: proxyId } })
+  }
+
   // ---------- 任务 ----------
   async addTask(user: JwtUser, id: string, dto: any) {
     const kase = await this.getCaseOr404(id)
@@ -986,7 +1193,7 @@ export class CasesService {
       if (kase.status !== 'IN_SERVICE') {
         throw new BadRequestException('法律援助案件须由律师接案并处于服务进行中，方可结案')
       }
-    } else if (!['CLASSIFIED', 'REFERRED'].includes(kase.status)) {
+    } else if (!['CLASSIFIED', 'REFERRED', 'FOLLOW_UP'].includes(kase.status)) {
       throw new BadRequestException('当前状态不可结案：需先完成分流/转介等服务阶段')
     }
 
@@ -1039,9 +1246,26 @@ export class CasesService {
 
   async followUp(user: JwtUser, id: string, dto: any) {
     const kase = await this.getCaseOr404(id)
-    if (!kase.archive) throw new BadRequestException('案件尚未归档')
-    await this.prisma.archive.update({ where: { caseId: id }, data: { followUpResult: dto.result } })
-    await this.event(id, user.sub, '回访登记', dto.result)
+    if (!kase.archive && kase.status !== 'CLOSED') {
+      // 服务进行中也可回访，不必已归档（上门代传后的关怀回访等）
+    }
+    const outcome = ['RESOLVED', 'ONGOING', 'NEED_REFERRAL'].includes(dto.outcome) ? dto.outcome : null
+    await this.prisma.archive.updateMany({ where: { caseId: id }, data: { followUpResult: dto.result } })
+    // 回访结果更新案件状态
+    const data: any = {
+      lastFollowUpAt: new Date(),
+      lastFollowUpResult: dto.result,
+      lastFollowUpOutcome: outcome,
+    }
+    if (outcome === 'NEED_REFERRAL') {
+      data.status = 'REFERRED'
+    } else if (outcome && kase.status !== 'CLOSED') {
+      // 已解决 / 继续跟进：在办案件进入回访跟进中；已结案的保留结案状态，仅记录回访
+      data.status = 'FOLLOW_UP'
+    }
+    await this.prisma.case.update({ where: { id }, data })
+    const outcomeLabel: Record<string, string> = { RESOLVED: '问题已解决', ONGOING: '继续跟进', NEED_REFERRAL: '需再次转介' }
+    await this.event(id, user.sub, '回访登记', `${dto.result}${outcome ? `（回访结论：${outcomeLabel[outcome]}，案件状态已更新）` : ''}`)
     return this.findOne(user, id)
   }
 
@@ -1050,7 +1274,7 @@ export class CasesService {
   // 工作人员首页：期限风险预警列表（实时评估，避免紧急案件被普通咨询淹没）
   async deadlineRisks(user: JwtUser) {
     const openCases = await this.prisma.case.findMany({
-      where: { status: { notIn: ['CLOSED', 'REFERRED'] } },
+      where: { status: { notIn: ['CLOSED', 'REFERRED', 'FOLLOW_UP'] } },
       include: {
         materials: { select: { status: true } },
         keyDates: true,

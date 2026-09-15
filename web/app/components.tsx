@@ -10,11 +10,13 @@ const NAV_BY_ROLE: Record<string, { href: string; label: string }[]> = {
     { href: '/cases', label: '我的案件' },
     { href: '/cases/new', label: '提交咨询' },
     { href: '/tasks', label: '我的待办' },
+    { href: '/proxies', label: '材料代传' },
   ],
   STAFF: [
     { href: '/cases', label: '案件分流' },
     { href: '/cases/new', label: '线下补录' },
     { href: '/tasks', label: '协同任务' },
+    { href: '/proxies', label: '材料代传' },
     { href: '/referrals', label: '转介管理' },
     { href: '/lawyers', label: '律师值班' },
     { href: '/stats', label: '统计分析' },
@@ -28,6 +30,7 @@ const NAV_BY_ROLE: Record<string, { href: string; label: string }[]> = {
     { href: '/cases', label: '案件列表' },
     { href: '/referrals', label: '转介办理' },
     { href: '/tasks', label: '协同任务' },
+    { href: '/proxies', label: '材料代传' },
     { href: '/stats', label: '统计分析' },
   ],
   WOMEN_FEDERATION: [
@@ -42,12 +45,14 @@ const NAV_BY_ROLE: Record<string, { href: string; label: string }[]> = {
   ],
   VOLUNTEER: [
     { href: '/tasks', label: '我的任务' },
+    { href: '/proxies', label: '上门代传' },
     { href: '/cases', label: '相关案件' },
   ],
   ADMIN: [
     { href: '/cases', label: '案件列表' },
     { href: '/cases/new', label: '线下补录' },
     { href: '/tasks', label: '协同任务' },
+    { href: '/proxies', label: '材料代传' },
     { href: '/referrals', label: '转介管理' },
     { href: '/lawyers', label: '律师值班' },
     { href: '/stats', label: '统计分析' },

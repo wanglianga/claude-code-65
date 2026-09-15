@@ -9,6 +9,7 @@ import {
   REFERRAL_STATUS_LABELS, REFERRAL_TYPE_LABELS, RISK_LABELS, riskBadge, ROLE_LABELS, SessionUser, SOURCE_LABELS,
   specialFlags, statusBadge, STATUS_LABELS, TASK_STATUS_LABELS, TASK_TYPE_LABELS, taskStatusBadge,
   TIMELINESS_LABELS, timelinessBadge, TYPE_LABELS, URGENCY_LABELS, DV_SIGNAL_LABELS, DV_RISK_LEVEL_LABELS,
+  PROXY_METHOD_LABELS, PROXY_STATUS_LABELS, proxyStatusBadge, FOLLOW_UP_OUTCOME_LABELS,
 } from '../../lib'
 
 export default function CaseDetailPage() {
@@ -82,7 +83,7 @@ export default function CaseDetailPage() {
 
   // 结案前置条件：完成规定服务阶段（法援案件须服务进行中；其他类型须已分流/转介）
   const closable = kase && kase.status !== 'CLOSED' && !['SUBMITTED', 'UNDER_REVIEW'].includes(kase.status) &&
-    (kase.category === 'LEGAL_AID' ? kase.status === 'IN_SERVICE' : ['CLASSIFIED', 'REFERRED'].includes(kase.status))
+    (kase.category === 'LEGAL_AID' ? kase.status === 'IN_SERVICE' : ['CLASSIFIED', 'REFERRED', 'FOLLOW_UP'].includes(kase.status))
 
   return (
     <>
@@ -213,8 +214,21 @@ export default function CaseDetailPage() {
                       {materials.map((m: any) => (
                         <tr key={m.id}>
                           <td>
-                            <div>{m.name}{m.kind ? <span className="muted">（{m.kind}）</span> : null}</div>
+                            <div>
+                              {m.name}{m.kind ? <span className="muted">（{m.kind}）</span> : null}
+                              {m.proxy && <Badge text={`志愿者${PROXY_METHOD_LABELS[m.method] || '代传'}`} cls="badge-purple" />}
+                            </div>
                             {m.note && <div className="muted" style={{ fontSize: 12 }}>{m.note}</div>}
+                            {m.purpose && <div style={{ fontSize: 12 }}>📌 用途：{m.purpose}</div>}
+                            {m.proxy && (
+                              <div style={{ fontSize: 12 }}>
+                                {m.proxy.volunteer ? `代传人：${m.proxy.volunteer.name} · ` : ''}
+                                {m.originalReturned ? <span style={{ color: 'var(--green)' }}>原件已归还</span> : <span className="muted">不涉及原件/复印件</span>}
+                              </div>
+                            )}
+                            {m.noticeSentAt && (isOwner || isStaff) && (
+                              <div className="muted" style={{ fontSize: 12 }}>✉️ 已于 {fmtDate(m.noticeSentAt)} 向居民发送用途说明与销毁/返还提醒</div>
+                            )}
                             <div className="muted" style={{ fontSize: 12 }}>
                               {m.uploadedBy ? `${m.uploadedBy.name} · ` : ''}{fmtDate(m.createdAt)}
                               {m.filePath && <> · <a href={`/api/materials/${m.id}/file?token=`} onClick={(e) => { e.preventDefault(); downloadFile(m.id) }}>下载附件</a></>}
@@ -245,6 +259,9 @@ export default function CaseDetailPage() {
                 )}
               </div>
             </div>
+
+            {/* ---------- 材料线下代传 ---------- */}
+            <MaterialProxyCard kase={kase} user={user} run={run} />
 
             {/* ---------- 服务单 ---------- */}
             <div className="card">
@@ -457,6 +474,21 @@ export default function CaseDetailPage() {
                 <AddReferral onSubmit={(dto) => run(() => api(`/cases/${kase.id}/referrals`, { method: 'POST', body: JSON.stringify(dto) }), '转介已发起')} />
               )}
             </div>
+
+            {/* ---------- 服务过程回访（工作人员，回访结果更新案件状态） ---------- */}
+            {isStaff && ['IN_SERVICE', 'REFERRED', 'FOLLOW_UP', 'CLASSIFIED', 'MATERIAL_SUPPLEMENT'].includes(kase.status) && (
+              <div className="card">
+                <h2>回访跟进</h2>
+                {kase.lastFollowUpAt && (
+                  <p className="muted" style={{ marginTop: 0 }}>
+                    最近回访：{fmtDateTime(kase.lastFollowUpAt)}
+                    {kase.lastFollowUpOutcome ? `（${FOLLOW_UP_OUTCOME_LABELS[kase.lastFollowUpOutcome]}）` : ''}
+                    {kase.lastFollowUpResult ? `：${kase.lastFollowUpResult}` : ''}
+                  </p>
+                )}
+                <FollowUpPanel onSubmit={(dto) => run(() => api(`/cases/${kase.id}/follow-up`, { method: 'POST', body: JSON.stringify(dto) }), '回访结果已登记，案件状态已更新')} />
+              </div>
+            )}
 
             {/* ---------- 结案归档 / 档案 ---------- */}
             {closable && (isStaff || isAssignedLawyer) && (
@@ -875,13 +907,20 @@ function SatisfactionPanel({ onSubmit }: any) {
 
 function FollowUpPanel({ onSubmit }: any) {
   const [result, setResult] = useState('')
+  const [outcome, setOutcome] = useState('RESOLVED')
   return (
     <div className="mt16" style={{ borderTop: '1px dashed var(--border)', paddingTop: 12 }}>
-      <h3>回访登记（工作人员）</h3>
+      <h3>回访登记（工作人员，回访结果会更新案件状态）</h3>
       <div className="row">
-        <input className="input" style={{ width: 420 }} placeholder="回访结果，如：已按咨询意见办理，问题已解决" value={result} onChange={(e) => setResult(e.target.value)} />
-        <button className="btn btn-sm" disabled={!result} onClick={() => { onSubmit({ result }); setResult('') }}>登记回访</button>
+        <input className="input" style={{ width: 380 }} placeholder="回访结果，如：已按咨询意见办理，问题已解决" value={result} onChange={(e) => setResult(e.target.value)} />
+        <select className="input" style={{ width: 150 }} value={outcome} onChange={(e) => setOutcome(e.target.value)}>
+          {Object.entries(FOLLOW_UP_OUTCOME_LABELS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+        </select>
+        <button className="btn btn-sm" disabled={!result} onClick={() => { onSubmit({ result, outcome }); setResult('') }}>登记回访</button>
       </div>
+      <p className="muted" style={{ fontSize: 12, margin: '4px 0 0' }}>
+        选「问题已解决」案件转为「回访跟进中」；「需再次转介」转为「已转介」；「继续跟进」保持办理。
+      </p>
     </div>
   )
 }
@@ -1153,5 +1192,156 @@ function GrantUserPicker({ r, allUsers, onRun }: any) {
       </select>
       <button className="btn btn-sm" disabled={!userId} onClick={() => { onRun(() => api(`/referrals/${r.id}/grants`, { method: 'POST', body: JSON.stringify({ userId }) }), '已授权该人员查看联系方式与住址'); setUserId('') }}>授权</button>
     </div>
+  )
+}
+
+// ---------- 材料线下代传（志愿者上门拍照/扫描/代交复印件） ----------
+function ProxyTimeline({ p }: any) {
+  const steps: Array<[string, string | null, string]> = [
+    ['预约上门', p.scheduledAt, 'ASSIGNED'],
+    ...(p.involvesOriginal ? [['取走原件', p.pickedUpAt, 'PICKED_UP']] as Array<[string, string | null, string]> : []),
+    ['拍照/扫描入卷', p.scannedAt, 'SCANNED'],
+    ...(p.involvesOriginal ? [['原件归还', p.returnedAt, 'RETURNED']] as Array<[string, string | null, string]> : []),
+    ['居民确认', p.residentConfirmedAt, 'CONFIRMED'],
+  ]
+  return (
+    <div className="proxy-chain">
+      {steps.map(([label, at, key], i) => {
+        const done = at != null
+        return (
+          <span key={key} className={done ? 'proxy-step on' : 'proxy-step'}>
+            <span className="dot">{done ? '✓' : i + 1}</span>
+            {label}
+            <em className="muted">{at ? fmtDateTime(at) : '待登记'}</em>
+          </span>
+        )
+      })}
+    </div>
+  )
+}
+
+function MaterialProxyCard({ kase, user, run }: any) {
+  const proxies = kase.materialProxies || []
+  const role = user.role
+  const isStaff = ['STAFF', 'ADMIN'].includes(role)
+  const isVolunteer = role === 'VOLUNTEER'
+  const isOwner = kase.residentId === user.id
+  const canRequest = (isStaff || isOwner || isVolunteer) && kase.status !== 'CLOSED'
+  const closed = ['CONFIRMED', 'CANCELLED'].includes
+
+  return (
+    <div className="card">
+      <h2>材料线下代传（老人/残障居民上门拍照·扫描·代交复印件）</h2>
+      {proxies.length === 0 ? <Empty text="暂无代传材料" /> : (
+        <table className="table">
+          <thead><tr><th>材料</th><th>方式/原件</th><th>志愿者/预约</th><th>流转记录</th><th>状态</th><th>操作</th></tr></thead>
+          <tbody>
+            {proxies.map((p: any) => {
+              const mine = isVolunteer && p.volunteerId === user.id
+              const canAct = isStaff || mine || (isOwner && ['SCANNED', 'RETURNED'].includes(p.status))
+              return (
+                <tr key={p.id}>
+                  <td>
+                    <div style={{ fontWeight: 600 }}>{p.materialName}</div>
+                    {p.reason && <div className="muted" style={{ fontSize: 12 }}>{p.reason}</div>}
+                    {p.purpose && <div style={{ fontSize: 12 }}>📌 用途：{p.purpose}</div>}
+                  </td>
+                  <td style={{ fontSize: 12 }}>
+                    <Badge text={PROXY_METHOD_LABELS[p.method]} cls="badge-blue" />
+                    <div>{p.involvesOriginal ? <span style={{ color: 'var(--orange)' }}>涉及原件（取走→归还→确认）</span> : <span className="muted">不带走原件</span>}</div>
+                  </td>
+                  <td style={{ fontSize: 12 }}>
+                    {p.volunteer ? `${p.volunteer.name}` : <span className="muted">待认领</span>}
+                    <div className="muted">{p.scheduledAt ? fmtDateTime(p.scheduledAt) : '未预约'}</div>
+                  </td>
+                  <td style={{ minWidth: 280 }}><ProxyTimeline p={p} /></td>
+                  <td><Badge text={PROXY_STATUS_LABELS[p.status]} cls={proxyStatusBadge(p.status)} /></td>
+                  <td>
+                    {!canAct ? <span className="muted">—</span> : (
+                      <div className="btn-row" style={{ marginTop: 0 }}>
+                        {p.status === 'REQUESTED' && isVolunteer && !p.volunteerId && (
+                          <button className="btn btn-sm" onClick={() => {
+                            const t = prompt('预约上门时间（YYYY-MM-DD HH:MM）')
+                            if (t) run(() => api(`/material-proxies/${p.id}/claim`, { method: 'POST', body: JSON.stringify({ scheduledAt: new Date(t.replace(' ', 'T')).toISOString() }) }), '已认领并预约上门')
+                          }}>认领并预约</button>
+                        )}
+                        {(mine || isStaff) && ['ASSIGNED', 'PICKED_UP'].includes(p.status) && (
+                          <button className="btn btn-sm" onClick={() => {
+                            const t = prompt('修改预约上门时间（YYYY-MM-DD HH:MM，留空取消）')
+                            if (t) run(() => api(`/material-proxies/${p.id}/schedule`, { method: 'POST', body: JSON.stringify({ scheduledAt: new Date(t.replace(' ', 'T')).toISOString() }) }), '预约时间已更新')
+                          }}>改预约</button>
+                        )}
+                        {p.involvesOriginal && p.status === 'ASSIGNED' && (mine || isStaff) && (
+                          <button className="btn btn-sm" onClick={() => run(() => api(`/material-proxies/${p.id}/stage/PICKED_UP`, { method: 'POST', body: JSON.stringify({}) }), '已登记取走原件')}>取走原件</button>
+                        )}
+                        {['ASSIGNED', 'PICKED_UP'].includes(p.status) && (mine || isStaff) && (
+                          <button className="btn btn-sm" onClick={() => {
+                            const purpose = prompt('材料用途（随完成告知居民）', p.purpose || '用于本案件法律援助办理与举证')
+                            if (purpose !== null) run(() => api(`/material-proxies/${p.id}/stage/SCANNED`, { method: 'POST', body: JSON.stringify({ purpose }) }), '已拍照/扫描入卷，律师端证据状态已更新')
+                          }}>拍照/扫描入卷</button>
+                        )}
+                        {p.involvesOriginal && ['PICKED_UP', 'SCANNED'].includes(p.status) && p.status !== 'RETURNED' && (mine || isStaff) && (
+                          <button className="btn btn-sm" onClick={() => run(() => api(`/material-proxies/${p.id}/stage/RETURNED`, { method: 'POST', body: JSON.stringify({}) }), '已登记原件归还')}>归还原件</button>
+                        )}
+                        {(isOwner || isStaff) && ['SCANNED', 'RETURNED'].includes(p.status) && (
+                          <button className="btn btn-sm btn-primary" disabled={p.involvesOriginal && !p.returnedAt}
+                            title={p.involvesOriginal && !p.returnedAt ? '请先由志愿者登记原件归还' : ''}
+                            onClick={() => run(() => api(`/material-proxies/${p.id}/confirm`, { method: 'POST', body: JSON.stringify({ purpose: p.purpose }) }), '已确认，用途说明与销毁提醒已送达')}>
+                            {isOwner ? '居民确认' : '代为确认'}
+                          </button>
+                        )}
+                        {!closed(p.status) && (isStaff) && (
+                          <button className="btn btn-sm btn-danger" onClick={() => {
+                            const reason = prompt('取消原因')
+                            if (reason !== null) run(() => api(`/material-proxies/${p.id}/cancel`, { method: 'POST', body: JSON.stringify({ reason }) }), '代传已取消')
+                          }}>取消</button>
+                        )}
+                      </div>
+                    )}
+                  </td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      )}
+      {canRequest && <CreateProxyForm caseId={kase.id} run={run} />}
+    </div>
+  )
+}
+
+function CreateProxyForm({ caseId, run }: any) {
+  const [materialName, setName] = useState('')
+  const [method, setMethod] = useState('PROXY_SCAN')
+  const [involvesOriginal, setOrig] = useState(false)
+  const [reason, setReason] = useState('')
+  const [purpose, setPurpose] = useState('')
+  return (
+    <form className="mt8" style={{ borderTop: '1px dashed var(--border)', paddingTop: 10 }}
+      onSubmit={(e) => {
+        e.preventDefault()
+        if (!materialName) return
+        run(() => api(`/cases/${caseId}/material-proxies`, { method: 'POST', body: JSON.stringify({ materialName, method, involvesOriginal, reason, purpose }) }), '代传申请已发起，等待志愿者认领')
+        setName(''); setReason(''); setPurpose(''); setOrig(false)
+      }}>
+      <h3>发起材料线下代传（志愿者上门）</h3>
+      <div className="row">
+        <input className="input" style={{ width: 220 }} placeholder="材料名称 *（如：低保证明原件）" value={materialName} onChange={(e) => setName(e.target.value)} />
+        <select className="input" style={{ width: 130 }} value={method} onChange={(e) => setMethod(e.target.value)}>
+          {Object.entries(PROXY_METHOD_LABELS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+        </select>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 13, whiteSpace: 'nowrap' }}>
+          <input type="checkbox" checked={involvesOriginal} onChange={(e) => setOrig(e.target.checked)} /> 涉及原件
+        </label>
+      </div>
+      <div className="row mt8">
+        <input className="input" style={{ width: 260 }} placeholder="代传原因（如：老人不会线上上传）" value={reason} onChange={(e) => setReason(e.target.value)} />
+        <input className="input" style={{ width: 300 }} placeholder="材料用途（完成后告知居民）" value={purpose} onChange={(e) => setPurpose(e.target.value)} />
+        <button className="btn btn-sm btn-primary">发起代传</button>
+      </div>
+      <p className="muted" style={{ fontSize: 12, margin: '6px 0 0' }}>
+        涉及原件时，志愿者需依次登记「取走 → 拍照/扫描 → 归还 → 居民确认」时间；代传完成后居民端会收到材料用途说明与销毁/返还提醒。
+      </p>
+    </form>
   )
 }

@@ -133,7 +133,7 @@ class UpdateMaterialDto {
 
 class TaskDto {
   @IsString() @IsNotEmpty() title: string
-  @IsOptional() @IsIn(['MATERIAL_SUPPLEMENT', 'HOME_VISIT', 'CONFLICT_CHECK', 'FOLLOW_UP', 'COORDINATION', 'REASSIGNMENT', 'DEADLINE_WATCH', 'OTHER'])
+  @IsOptional() @IsIn(['MATERIAL_SUPPLEMENT', 'MATERIAL_PROXY', 'HOME_VISIT', 'CONFLICT_CHECK', 'FOLLOW_UP', 'COORDINATION', 'REASSIGNMENT', 'DEADLINE_WATCH', 'OTHER'])
   type?: string
   @IsOptional() @IsString() description?: string
   @IsOptional() @IsString() assigneeId?: string
@@ -223,6 +223,30 @@ class SatisfactionDto {
 
 class FollowUpDto {
   @IsString() @IsNotEmpty() result: string
+  @IsOptional() @IsIn(['RESOLVED', 'ONGOING', 'NEED_REFERRAL']) outcome?: string
+}
+
+class CreateProxyDto {
+  @IsString() @IsNotEmpty() materialName: string
+  @IsOptional() @IsIn(['PROXY_PHOTO', 'PROXY_SCAN', 'PROXY_COPY']) method?: string
+  @IsOptional() @IsBoolean() involvesOriginal?: boolean
+  @IsOptional() @IsString() reason?: string
+  @IsOptional() @IsString() purpose?: string
+  @IsOptional() @IsDateString() scheduledAt?: string
+}
+
+class ClaimProxyDto {
+  @IsOptional() @IsDateString() scheduledAt?: string
+}
+
+class ProxyStageDto {
+  @IsOptional() @IsString() note?: string
+  @IsOptional() @IsString() kind?: string
+  @IsOptional() @IsString() purpose?: string
+}
+
+class ConfirmProxyDto {
+  @IsOptional() @IsString() purpose?: string
 }
 
 class ResidentIntentDto {
@@ -344,6 +368,48 @@ export class CasesController {
       throw new BadRequestException('文件不存在')
     }
     res.download(path, m.name)
+  }
+
+  // ----- 材料线下代传（志愿者上门） -----
+  @Post('cases/:id/material-proxies')
+  @Roles('STAFF', 'ADMIN', 'VOLUNTEER', 'RESIDENT')
+  createProxy(@CurrentUser() user: JwtUser, @Param('id') id: string, @Body() dto: CreateProxyDto) {
+    return this.svc.createProxy(user, id, dto)
+  }
+
+  @Get('material-proxies')
+  listProxies(@CurrentUser() user: JwtUser) {
+    return this.svc.listProxies(user)
+  }
+
+  @Post('material-proxies/:id/claim')
+  @Roles('VOLUNTEER')
+  claimProxy(@CurrentUser() user: JwtUser, @Param('id') id: string, @Body() dto: ClaimProxyDto) {
+    return this.svc.claimProxy(user, id, dto)
+  }
+
+  @Post('material-proxies/:id/schedule')
+  @Roles('STAFF', 'ADMIN', 'VOLUNTEER', 'RESIDENT')
+  scheduleProxy(@CurrentUser() user: JwtUser, @Param('id') id: string, @Body() dto: ClaimProxyDto) {
+    return this.svc.scheduleProxy(user, id, dto)
+  }
+
+  @Post('material-proxies/:id/stage/:stage')
+  @Roles('STAFF', 'ADMIN', 'VOLUNTEER', 'RESIDENT')
+  markProxyStage(@CurrentUser() user: JwtUser, @Param('id') id: string, @Param('stage') stage: string, @Body() dto: ProxyStageDto) {
+    return this.svc.markProxyStage(user, id, stage, dto)
+  }
+
+  @Post('material-proxies/:id/confirm')
+  @Roles('STAFF', 'ADMIN', 'VOLUNTEER', 'RESIDENT')
+  confirmProxy(@CurrentUser() user: JwtUser, @Param('id') id: string, @Body() dto: ConfirmProxyDto) {
+    return this.svc.confirmProxy(user, id, dto)
+  }
+
+  @Post('material-proxies/:id/cancel')
+  @Roles('STAFF', 'ADMIN', 'VOLUNTEER', 'RESIDENT')
+  cancelProxy(@CurrentUser() user: JwtUser, @Param('id') id: string, @Body() dto: ReasonDto) {
+    return this.svc.cancelProxy(user, id, dto)
   }
 
   // ----- 任务 -----

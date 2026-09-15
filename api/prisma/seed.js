@@ -239,9 +239,38 @@ async function main() {
       { caseId: kase.id, name: '低保证明', kind: '证件', status: 'MISSING', note: '待志愿者上门协助调取' },
     ] })
     await prisma.task.create({ data: { caseId: kase.id, type: 'HOME_VISIT', title: '上门协助老人整理与上传证据材料', assigneeRole: 'VOLUNTEER', assigneeId: volunteer.id, status: 'OPEN', createdById: staff.id, dueDate: new Date(now + 3 * day) } })
+
+    // 材料线下代传：一张已完成（涉及原件全链：取走→扫描→归还→居民确认 + 用途/销毁提醒）
+    const proxyDone = await prisma.materialProxy.create({ data: {
+      caseId: kase.id, materialName: '老人身份证', reason: '老人独居不会线上上传，由志愿者上门扫描原件',
+      method: 'PROXY_SCAN', involvesOriginal: true, purpose: '用于赡养纠纷法律援助资格审查与举证',
+      status: 'CONFIRMED', requestedById: staff.id, volunteerId: volunteer.id,
+      scheduledAt: new Date(now - 3 * day), pickedUpAt: new Date(now - 2 * day), scannedAt: new Date(now - 2 * day),
+      returnedAt: new Date(now - 2 * day), residentConfirmedAt: new Date(now - 1 * day), completedAt: new Date(now - 1 * day),
+      destroyNoticeSentAt: new Date(now - 1 * day), note: '上门当日取原件扫描后即归还',
+    } })
+    await prisma.material.create({ data: {
+      caseId: kase.id, name: '老人身份证', kind: '扫描件', status: 'RECEIVED',
+      note: '志愿者上门代传（原件扫描），律师端证据已更新为已提交待核验', uploadedById: volunteer.id,
+      method: 'PROXY_SCAN', proxyId: proxyDone.id, purpose: '用于赡养纠纷法律援助资格审查与举证',
+      originalReturned: true, noticeSentAt: new Date(now - 1 * day),
+    } })
+    // 一张待认领：低保证明待志愿者上门代交复印件
+    await prisma.materialProxy.create({ data: {
+      caseId: kase.id, materialName: '低保证明', reason: '老人行动不便，需志愿者上门代交复印件',
+      method: 'PROXY_COPY', involvesOriginal: false, requestedById: staff.id, status: 'REQUESTED',
+    } })
+    await prisma.task.create({ data: { caseId: kase.id, type: 'MATERIAL_PROXY', title: '上门代传材料：低保证明', description: '预约上门代交复印件（不带走原件）', assigneeRole: 'VOLUNTEER', createdById: staff.id, dueDate: new Date(now + 2 * day) } })
+
     await prisma.caseEvent.createMany({ data: [
       { caseId: kase.id, actorId: staff.id, action: '线下补录', detail: '老人不会线上上传，社区纸质登记后代为补录' },
       { caseId: kase.id, actorId: staff.id, action: '资格初审', detail: '分流为：法律援助' },
+      { caseId: kase.id, actorId: staff.id, action: '发起材料代传', detail: '老人身份证（上门扫描），待志愿者认领' },
+      { caseId: kase.id, actorId: volunteer.id, action: '志愿者认领代传', detail: '认领材料：老人身份证；预约上门' },
+      { caseId: kase.id, actorId: volunteer.id, action: '代传：取走原件', detail: '老人身份证' },
+      { caseId: kase.id, actorId: volunteer.id, action: '代传：拍照/扫描入卷', detail: '老人身份证 已代为扫描，证据状态更新为「已提交待核验」' },
+      { caseId: kase.id, actorId: volunteer.id, action: '代传：原件归还', detail: '老人身份证 已归还居民，待居民确认' },
+      { caseId: kase.id, actorId: staff.id, action: '代传完成并居民确认', detail: '老人身份证 已完成代传；已向居民告知材料用途与销毁/返还提醒' },
     ] })
     return kase
   })

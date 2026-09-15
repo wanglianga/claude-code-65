@@ -69,7 +69,7 @@ export const TYPE_LABELS: Record<string, string> = {
 export const STATUS_LABELS: Record<string, string> = {
   SUBMITTED: '待初审', UNDER_REVIEW: '初审中', CLASSIFIED: '已分流',
   AWAITING_LAWYER: '待律师接案', IN_SERVICE: '服务进行中', MATERIAL_SUPPLEMENT: '待补正材料',
-  REFERRED: '已转介', CLOSED: '已结案',
+  REFERRED: '已转介', FOLLOW_UP: '回访跟进中', CLOSED: '已结案',
 }
 export const CATEGORY_LABELS: Record<string, string> = {
   LEGAL_AID: '法律援助', PEOPLES_MEDIATION: '人民调解', JUDICIAL_REFERRAL: '司法所转介',
@@ -86,7 +86,7 @@ export const MATERIAL_STATUS_LABELS: Record<string, string> = {
   MISSING: '待补交', RECEIVED: '已提交待核验', NEEDS_CORRECTION: '需补正', VERIFIED: '已核验',
 }
 export const TASK_TYPE_LABELS: Record<string, string> = {
-  MATERIAL_SUPPLEMENT: '材料补正', HOME_VISIT: '上门协助', CONFLICT_CHECK: '利益冲突核查',
+  MATERIAL_SUPPLEMENT: '材料补正', MATERIAL_PROXY: '材料线下代传', HOME_VISIT: '上门协助', CONFLICT_CHECK: '利益冲突核查',
   FOLLOW_UP: '回访', COORDINATION: '多单位协同', REASSIGNMENT: '重新指派', DEADLINE_WATCH: '期限盯办', OTHER: '其他',
 }
 export const TASK_STATUS_LABELS: Record<string, string> = { OPEN: '待处理', IN_PROGRESS: '处理中', DONE: '已完成', CANCELLED: '已取消' }
@@ -96,6 +96,19 @@ export const DV_SIGNAL_LABELS: Record<string, string> = {
   threat: '存在威胁/恐吓言辞', harm: '存在伤害/暴力描述', control: '存在控制财产/经济控制描述',
 }
 export const DV_RISK_LEVEL_LABELS: Record<string, string> = { HIGH: '高风险', MEDIUM: '中风险', LOW: '低风险' }
+export const PROXY_METHOD_LABELS: Record<string, string> = { PROXY_PHOTO: '上门拍照', PROXY_SCAN: '上门扫描', PROXY_COPY: '代交复印件' }
+export const PROXY_STATUS_LABELS: Record<string, string> = {
+  REQUESTED: '待志愿者认领', ASSIGNED: '已认领/已预约', PICKED_UP: '已取走原件',
+  SCANNED: '已拍照/扫描入卷', RETURNED: '原件已归还', CONFIRMED: '居民已确认', CANCELLED: '已取消',
+}
+export function proxyStatusBadge(s: string): string {
+  const map: Record<string, string> = {
+    REQUESTED: 'badge-orange', ASSIGNED: 'badge-blue', PICKED_UP: 'badge-purple',
+    SCANNED: 'badge-blue', RETURNED: 'badge-purple', CONFIRMED: 'badge-green', CANCELLED: 'badge-gray',
+  }
+  return map[s] || 'badge-gray'
+}
+export const FOLLOW_UP_OUTCOME_LABELS: Record<string, string> = { RESOLVED: '问题已解决', ONGOING: '继续跟进', NEED_REFERRAL: '需再次转介' }
 export const APPT_STATUS_LABELS: Record<string, string> = { PENDING: '待确认', CONFIRMED: '已确认', COMPLETED: '已完成', CANCELLED: '已取消' }
 export const RISK_LABELS: Record<string, string> = { NONE: '无风险', LOW: '较低', MEDIUM: '中等', HIGH: '高风险', EXPIRED: '已逾期' }
 export const INTENT_LABELS: Record<string, string> = { WILLING: '愿意立即启动程序', NOT_YET: '暂缓考虑', DECLINED: '放弃申请' }
@@ -124,7 +137,7 @@ export function statusBadge(status: string): string {
   const map: Record<string, string> = {
     SUBMITTED: 'badge-orange', UNDER_REVIEW: 'badge-orange', CLASSIFIED: 'badge-blue',
     AWAITING_LAWYER: 'badge-purple', IN_SERVICE: 'badge-blue', MATERIAL_SUPPLEMENT: 'badge-orange',
-    REFERRED: 'badge-purple', CLOSED: 'badge-green',
+    REFERRED: 'badge-purple', FOLLOW_UP: 'badge-blue', CLOSED: 'badge-green',
   }
   return map[status] || 'badge-gray'
 }
